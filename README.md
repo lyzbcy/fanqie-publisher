@@ -7,11 +7,12 @@
 
 ## ✨ 功能特性
 
-- 🤖 自动化发布流程
-- 📝 支持短故事创建
+- 🤖 全自动发布流程（Playwright + CDP）
+- 📖 **小说章节发布**（已验证稳定，支持自动填写章节号/标题/正文/勾选AI声明）
+- 📝 短故事创建
 - 💾 草稿保存与发布
 - 🔄 与日记系统集成
-- ⏰ 支持定时发布
+- ⏰ 支持定时发布（Cron 集成）
 
 ## 📦 安装
 
@@ -145,19 +146,48 @@ fanqie-publisher/
 ## ⚠️ 注意事项
 
 1. **实名认证**：首次发布需要完成实名认证
-2. **分类选择**：部分分类下拉框需要手动操作
-3. **字数要求**：超过6000字才有机会签约
-4. **审核时间**：发布后需要等待平台审核
-5. **元素引用**：页面元素ID会变化，每次操作前需要重新获取
+2. **字数要求**：小说每章 ≥1000字，短故事无限制
+3. **审核时间**：发布后需要等待平台审核
+4. **登录态**：番茄小说登录态几天过期，需通过 noVNC 远程桌面重新登录
+
+## 🔑 小说章节发布关键经验（2026-05-29 踩坑总结）
+
+详见 [docs/troubleshooting.md](docs/troubleshooting.md)，核心要点：
+
+1. **章节号**必须用 `fill()` 填入，`keyboard.type()` 会导致 React 状态忽略
+2. **标题**只填纯标题（如`悬崖上的灯`），不带"第X章："前缀
+3. **正文**必须用 `keyboard.type()`，`fill()` 不会触发 React 输入状态更新导致"下一步"按钮 disabled
+4. **"是否使用AI"** 必须选"是"，否则确认发布按钮点了没反应
+5. **arco-modal 遮罩**需要移除 mask + 恢复 pointerEvents 才能点击确认发布按钮
+6. **Chrome 进程管理**：不要杀 OpenClaw 的 headless Chrome（端口9222），番茄发布用独立 Chrome（端口9333）
+
+## 📁 项目结构
+
+```
+fanqie-publisher/
+├── README.md
+├── package.json
+├── src/
+│   ├── index.js              # 主入口
+│   ├── publish.js            # 短故事发布脚本
+│   └── publish-chapter.js    # 小说章节发布脚本（推荐）
+├── docs/
+│   ├── workflow.md           # 发布流程
+│   ├── troubleshooting.md    # 踩坑记录 & 故障排除
+│   └── SKILL.md              # OpenClaw Skill 完整文档
+├── examples/
+│   └── basic.js              # 基础示例
+└── LICENSE
+```
 
 ## 🛠️ 故障排除
 
-| 问题 | 解决方案 |
-|------|---------|
-| 无法点击元素 | 先执行 `snapshot -i` 获取最新元素引用 |
-| 实名认证弹窗 | 手动在浏览器中完成认证 |
-| 分类选择无效 | 分类下拉框可能需要手动操作 |
-| 内容未保存 | 检查正文编辑区是否正确获取焦点 |
+详见 [docs/troubleshooting.md](docs/troubleshooting.md)
+
+- 下一步按钮 disabled → 检查章节号是否用 fill() 填入、正文是否用 keyboard.type()
+- 确认发布点了没反应 → 检查"是否使用AI"是否选了"是"
+- 登录态过期 → 通过 noVNC 远程桌面重新登录
+- Chrome 启动失败 SingletonLock → 删除 profile 目录下的 SingletonLock 文件
 
 ## 🤝 贡献指南
 
