@@ -282,7 +282,13 @@ fanqie-publisher/
 A：能。按照上面的安装步骤一步步来，每一步都有命令。如果卡住了，提 Issue 我帮你看。
 
 **Q：支持 Windows 吗？**
-A：脚本本身是跨平台的，但需要调整 Chrome 路径和 Xvfb 部分。Windows 用户建议用 WSL2。
+A：脚本本身是跨平台的，但需要调整 Chrome 路径和 Xvfb 部分。Windows 用户建议用 WSL2。如果不想用 WSL2，Playwright 的 Chrome 路径和 Linux 不同，可以通过以下命令查找：
+```bash
+# Windows PowerShell
+npx playwright install chromium
+# 默认安装在 %LOCALAPPDATA%\ms-playwright\
+```
+然后修改启动脚本中的 `CHROMIUM` 路径即可。Windows 下不需要 Xvfb。
 
 **Q：会被番茄封号吗？**
 A：不确定。本项目只是自动化操作浏览器，发布的内容质量由你自己负责。建议发布优质原创内容，不要灌水。
