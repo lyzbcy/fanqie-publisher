@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 const { chromium } = require('/root/.openclaw/douyin-creator-tools/node_modules/playwright');
 const fs = require('fs');
-const CDP = process.env.CDP_PORT || '9333';
-const BOOK_ID = '7644905838972259352';
+const path = require('path');
+
+// 读取配置文件（优先从脚本同目录找 config.json）
+const configPath = path.resolve(__dirname, 'config.json');
+const config = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, 'utf-8')) : {};
+const CDP = process.env.CDP_PORT || String(config.cdp_port || '9333');
+const BOOK_ID = process.env.BOOK_ID || config.book_id;
 const chapter = parseInt(process.argv[2]);
 const chapterTitle = process.argv[3];
 const contentFile = process.argv[4];
+if (!BOOK_ID) { console.error('❌ 未配置 book_id，请在 config.json 中设置或通过 BOOK_ID 环境变量传入'); process.exit(1); }
 if (!chapter || !chapterTitle || !contentFile) process.exit(1);
 const content = fs.readFileSync(contentFile, 'utf-8').replace(/^#.*$/gm, '').replace(/^---$/gm, '').trim();
 const W = (ms) => new Promise(r => setTimeout(r, ms));
@@ -28,8 +34,8 @@ const W = (ms) => new Promise(r => setTimeout(r, ms));
   await si.fill(String(chapter));
   await W(500);
   await page.locator('input[placeholder="请输入标题"]').first().click({ force: true });
-  await page.keyboard.press('Control+a');
-  await page.keyboard.type(chapterTitle, { delay: 10 });
+  await page.locator('input[placeholder="请输入标题"]').first().fill(chapterTitle);
+  await W(300);
   await W(500);
   await page.locator('div.ProseMirror').first().click({ force: true });
   await W(200);

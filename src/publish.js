@@ -18,7 +18,7 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 
-const CDP_URL = 'http://localhost:9333';
+const CDP_URL = `http://localhost:${process.env.CDP_PORT || '9333'}`;
 const FANQIE_SHORT_MANAGE = 'https://fanqienovel.com/main/writer/short-manage';
 const TIMEOUT = 15000;
 
@@ -49,7 +49,7 @@ function parseArgs() {
       const date = dateMatch ? dateMatch[1] : new Date().toISOString().split('T')[0];
       // 判断是早安还是晚间
       const isEvening = opts.diary.includes('evening');
-      opts.title = `${opts.diary_prefix || 'AI日记'}·${date}${isEvening ? '·夜篇' : ''}`;
+      opts.title = `涵家族的日常·${date}${isEvening ? '·夜篇' : ''}`;
     }
     
     if (!opts.content) {

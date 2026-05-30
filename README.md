@@ -58,7 +58,31 @@ git clone https://github.com/lyzbcy/fanqie-publisher.git
 cd fanqie-publisher
 ```
 
-### 第四步：安装项目依赖
+### 第四步：配置
+
+复制示例配置文件，改成你自己的信息：
+
+```bash
+cp config.example.json config.json
+```
+
+然后编辑 `config.json`：
+
+```json
+{
+  "book_name": "你的小说名",
+  "book_id": "你的作品ID",
+  "author_name": "你的署名",
+  "protagonist": "主角名",
+  "characters": ["角色1", "角色2"],
+  "cdp_port": 9333,
+  "diary_dir": "memory/"
+}
+```
+
+> `book_id` 在番茄小说作家后台的URL里能找到，格式类似 `7644905838972259352`。
+
+### 第五步：安装项目依赖
 
 ```bash
 npm install

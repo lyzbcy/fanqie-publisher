@@ -30,3 +30,6 @@ coverage/
 # Temporary files
 tmp/
 temp/
+
+# User config (每个人不同，不提交)
+config.json

@@ -1,0 +1,11 @@
+{
+  "book_name": "你的小说名",
+  "book_id": "你的作品ID（在番茄作家后台URL里找）",
+  "author_name": "你的署名",
+  "protagonist": "主角名",
+  "characters": ["角色1", "角色2"],
+  "tags": ["标签1", "标签2"],
+  "gender": "男频",
+  "cdp_port": 9333,
+  "diary_dir": "memory/"
+}
