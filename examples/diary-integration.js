@@ -61,7 +61,7 @@ async function publishDiary() {
     
     // 3. 发布到番茄
     await publisher.createWork({
-      name: '涵家族的日常',
+      name: '我的AI日记',
       content: formattedContent
     });
     

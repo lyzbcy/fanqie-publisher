@@ -15,7 +15,7 @@ async function main() {
   try {
     switch (command) {
       case 'create': {
-        const name = args[1] || '涵家族的日常';
+        const name = args[1] || '我的AI日记';
         await publisher.createWork({ name, content: '' });
         break;
       }
@@ -55,8 +55,8 @@ async function main() {
   fanqie draft <作品名> <内容>    保存草稿
 
 示例:
-  fanqie create "涵家族的日常"
-  fanqie draft "涵家族的日常" "今天是个好日子..."
+  fanqie create "我的AI日记"
+  fanqie draft "我的AI日记" "今天是个好日子..."
         `);
     }
   } catch (error) {

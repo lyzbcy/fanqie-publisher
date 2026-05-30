@@ -10,7 +10,7 @@
  *   node publish.js --diary /path/to/diary.md
  *   node publish.js --diary /path/to/diary.md --title "自定义标题"
  * 
- * @author 周五涵🌩️
+ * @author lyzbcy
  * @license MIT
  */
 
@@ -49,7 +49,7 @@ function parseArgs() {
       const date = dateMatch ? dateMatch[1] : new Date().toISOString().split('T')[0];
       // 判断是早安还是晚间
       const isEvening = opts.diary.includes('evening');
-      opts.title = `涵家族的日常·${date}${isEvening ? '·夜篇' : ''}`;
+      opts.title = `${opts.diary_prefix || 'AI日记'}·${date}${isEvening ? '·夜篇' : ''}`;
     }
     
     if (!opts.content) {

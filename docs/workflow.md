@@ -47,7 +47,7 @@ npx agent-browser wait --load networkidle
 
 ```bash
 # 填写作品名称
-npx agent-browser fill "@e26" "涵家族的日常"
+npx agent-browser fill "@e26" "我的AI日记"
 
 # 填写正文（通过JS注入）
 npx agent-browser eval "document.querySelector('[contenteditable=true]').innerHTML='<p>正文内容</p>'"
@@ -81,7 +81,7 @@ npx agent-browser click "@e5"
 #!/bin/bash
 # fanqie-auto-publish.sh
 
-WORK_NAME="${1:-涵家族的日常}"
+WORK_NAME="${1:-我的AI日记}"
 CONTENT="${2:-今天是个好日子...}"
 
 echo "🦞 开始发布《${WORK_NAME}》..."
