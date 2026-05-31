@@ -27,7 +27,7 @@ description: 番茄小说自动发布技能。将日记改写为小说章节后�
 
 ## 📚 作品信息
 
-- 小说书号: 在番茄小说作家后台查看你的作品ID
+- 小说名称和书号：在 `config.json` 中配置（`book_name` + `book_id`）
 - 标签: 搞笑轻松、都市、系统、二次元 | 男频
 - 发布URL: `https://fanqienovel.com/main/writer/{BOOK_ID}/publish/?enter_from=newchapter_0`
 
@@ -72,6 +72,19 @@ nohup "$CHROMIUM" \
   "https://fanqienovel.com/writer/zone/" \
   > /tmp/chrome-fanqie.log 2>&1 &
 ```
+
+### 步骤1.5: 发布完成后关闭 Chrome（⚠️ 必须执行）
+
+发布成功确认后，**必须关闭 Chrome 释放内存**（约 600-700MB）：
+
+```bash
+# 杀掉所有 fanqie-publisher 相关的 Chrome 进程
+pkill -9 -f "fanqie-publisher"
+# 确认已关闭
+pgrep -fa "fanqie-publisher" || echo "Chrome已关闭"
+```
+
+⚠️ **不要忘记这步！** 番茄小说的 Chrome 常驻会占用大量内存（render进程 500MB+），服务器只有 1.9GB 物理内存，不关会撑爆。
 
 ### 步骤2: 检查登录态
 
@@ -127,8 +140,9 @@ document.querySelectorAll('.arco-modal-wrapper').forEach(e => { e.style.pointerE
 ### 6. Chrome 进程管理
 - **绝对不要杀 OpenClaw 的 headless Chrome（端口9222）！** 它是 OpenClaw 内部用的
 - 番茄发布用独立的 Chrome（端口9333，profile: fanqie-publisher/browser-data）
-- 关闭时只杀 fanqie-publisher 的: `pkill -f "fanqie-publisher"`
+- 关闭时只杀 fanqie-publisher 的: `pkill -9 -f "fanqie-publisher"`
 - 重启前必须删 SingletonLock: `rm -f /root/.openclaw/fanqie-publisher/browser-data/SingletonLock`
+- **⚠️ 发布完成后必须关闭 Chrome 释放内存！** 服务器只有1.9GB物理内存，Chrome常驻占600-700MB，不关会严重影响其他任务（抖音评论检查等）
 
 ### 7. 登录态过期
 - 番茄小说登录态几天就过期
@@ -145,4 +159,33 @@ document.querySelectorAll('.arco-modal-wrapper').forEach(e => { e.style.pointerE
 - 增加叙事性，添加场景描写和内心独白
 - 文学化语言，去掉日记格式的"## 心情"等标题
 - 每章 ≥ 1000字（番茄最低要求）
-- 署名：自定义（可在配置中设置）
+- 署名：在 `config.json` 的 `author_name` 字段配置
+
+## ⚙️ 配置文件 (config.json)
+
+脚本同目录下放 `config.json`，包含所有个性化配置：
+
+```json
+{
+  "book_name": "你的小说名",
+  "book_id": "你的作品ID",
+  "author_name": "你的署名",
+  "protagonist": "主角名",
+  "characters": ["角色1", "角色2"],
+  "tags": ["标签1", "标签2"],
+  "gender": "男频",
+  "cdp_port": 9333,
+  "diary_dir": "memory/"
+}
+```
+
+**字段说明：**
+- `book_name` — 番茄小说上的作品名称
+- `book_id` — 作品ID（在番茄作家后台URL中查看）
+- `author_name` — 署名（写日记时的落款）
+- `protagonist` — 主角名（AI改写小说时使用）
+- `characters` — 角色列表（AI改写时参考）
+- `cdp_port` — Chrome CDP端口（默认9333）
+- `diary_dir` — 日记文件目录
+
+**注意：** `config.json` 不提交到 GitHub（已在 .gitignore 中排除），每个人维护自己的配置。
