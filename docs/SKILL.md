@@ -33,15 +33,21 @@ description: 番茄小说自动发布技能。将日记改写为小说章节后�
 
 ## 🚀 使用方式
 
-### 小说章节发布（推荐）
+### 小说章节发布（推荐，v2.0 通用版）
 
 ```bash
 cd /root/.openclaw/douyin-creator-tools
-CDP_PORT=9333 node <脚本路径> <章节号> <纯标题> <内容文件.md>
+node ~/.openclaw/workspace/skills/fanqie-publisher-skill/publish-chapter.js <章节号> <纯标题> <内容文件.md>
 
 # 示例
-CDP_PORT=9333 node /tmp/pub6.js 3 '悬崖上的灯' /tmp/fanqie-chapter3.md
+node ~/.openclaw/workspace/skills/fanqie-publisher-skill/publish-chapter.js 3 '悬崖上的灯' /tmp/fanqie-chapter3.md
 ```
+
+**v2.0 设计原则：**
+- 所有按钮/操作通过**可见文本**定位（"下一步"、"确认发布"、"提交"等）
+- 不硬编码CSS class名或坐标，番茄改版不影响
+- 跨用户通用，fork就能用
+- 每步都有fallback方案，主方案失败自动尝试备选
 
 ### 短故事发布（旧模式）
 
@@ -99,13 +105,17 @@ for t in json.load(sys.stdin): print(t.get('title','?')[:50])
 
 ### 步骤3: 执行发布脚本
 
-自动发布流程（6步）：
-1. **填写章节号** — `input.serial-input` 用 `fill()` 填数字
-2. **填写标题** — `input[placeholder="请输入标题"]` 用 `keyboard.type()`（只填纯标题，不带"第X章："）
-3. **填写正文** — `div.ProseMirror` 用 `keyboard.type()`（delay:0）
-4. **点下一步** → 处理错别字弹窗（点"提交"）→ 选择"仅基础检测"
-5. **勾选"是否使用AI"="是"** — 在发布设置弹窗里点 radio "是"
-6. **点"确认发布"** — 移除所有 arco-modal-mask + pointerEvents:auto 后点击
+v2.0 自动发布流程（8步，全文本定位）：
+1. **连接Chrome** — CDP连接已有实例
+2. **打开发布页** — 导航到发布URL，检测登录态
+3. **填写内容** — 章节号(fill()) + 标题(fill()) + 正文(keyboard.type())
+4. **验证填写** — 检查章节号是否正确填入
+5. **点"下一步"** — 文字定位按钮点击
+6. **处理弹窗** — 点"提交"→"仅基础检测"（如有弹窗）
+7. **发布设置** — 选"是"（是否使用AI）
+8. **确认发布** — 处理遮罩后点"确认发布"
+
+每步都有fallback和调试截图，失败时自动保存截图到 `/tmp/fanqie-debug-*.png`
 
 ## ⚠️ 关键踩坑记录（2026-05-29 血泪总结）
 
