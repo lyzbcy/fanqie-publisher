@@ -1,201 +1,75 @@
 ---
 name: fanqie-publisher-skill
-description: 番茄小说自动发布技能。将日记改写为小说章节后自动发布到番茄小说平台。
+description: 在 Windows 本机通过已登录的番茄作家后台拆分、预检、填写、定时或立即发布长篇章节，并在提交前后核验正文、声明、发布时间和后台结果。用户要求发布番茄小说、准备章节草稿、排查番茄后台排版或沉淀发布流程时使用；不用于创作正文或自动创建作品。
 ---
 
-# 番茄小说自动发布 Skill
+# 番茄小说长篇章节发布
 
-## 📋 架构
+## 安全原则
 
-```
-日记文件(diary/YYYY-MM-DD.md) → AI改写为小说章节 → Playwright+CDP自动化发布 → 番茄小说
-```
+- 默认只执行 `--dry-run`。只有明确传入 `--publish` 才会点击“确认发布”。
+- 不移除网页遮罩，不 force click，不绕过 disabled 状态。
+- 发布前回读章号、标题和完整正文；正文非空白字符必须完全一致。
+- 按逻辑段逐段输入，每段之间只按一次回车；检测到正文内部空段就停止，防止后台出现大片空白。
+- “是否使用AI”只在对应表单内选择“是”，并验证选中状态。
+- 定时发布必须回读开关、日期和时间；提交后必须在章节管理页再次看到目标时间。
+- 发布前查询章节管理页；发布后回到章节管理页核对章号、标题和发布时间，再写本地账本。
+- 先发布第1章，后台人工复核后再灰度第2、3章。不要直接批量发布整本。
 
-## 🔧 前置依赖
+## Windows 启动浏览器
 
-1. **Playwright** (安装在 douyin-creator-tools 中)
-   - 路径: `/root/.openclaw/douyin-creator-tools/node_modules/playwright`
-   - **必须 cd 到该目录再执行 node 脚本**
+在项目根目录启动独立 Edge 配置和 CDP 端口 9333：
 
-2. **Chrome with CDP** - CDP端口 `9333`
-   - Profile: `/root/.openclaw/fanqie-publisher/browser-data`
-   - ⚠️ **不要动 OpenClaw 内置 headless Chrome（browser-existing-session，端口9222）！**
-   - 启动前先清理 SingletonLock: `rm -f /root/.openclaw/fanqie-publisher/browser-data/SingletonLock`
-
-3. **noVNC 远程桌面** - 用户扫码登录时使用
-   - URL: `http://111.231.25.152/vnc/vnc.html`
-
-## 📚 作品信息
-
-- 小说名称和书号：在 `config.json` 中配置（`book_name` + `book_id`）
-- 标签: 搞笑轻松、都市、系统、二次元 | 男频
-- 发布URL: `https://fanqienovel.com/main/writer/{BOOK_ID}/publish/?enter_from=newchapter_0`
-
-## 🚀 使用方式
-
-### 小说章节发布（推荐，v2.0 通用版）
-
-```bash
-cd /root/.openclaw/douyin-creator-tools
-node ~/.openclaw/workspace/skills/fanqie-publisher-skill/publish-chapter.js <章节号> <纯标题> <内容文件.md>
-
-# 示例
-node ~/.openclaw/workspace/skills/fanqie-publisher-skill/publish-chapter.js 3 '悬崖上的灯' /tmp/fanqie-chapter3.md
+```powershell
+& 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' `
+  --remote-debugging-port=9333 `
+  '--user-data-dir=E:\path\to\fanqie-publisher\browser-data' `
+  --no-first-run --no-default-browser-check `
+  'https://fanqienovel.com/writer/zone/'
 ```
 
-**v2.0 设计原则：**
-- 所有按钮/操作通过**可见文本**定位（"下一步"、"确认发布"、"提交"等）
-- 不硬编码CSS class名或坐标，番茄改版不影响
-- 跨用户通用，fork就能用
-- 每步都有fallback方案，主方案失败自动尝试备选
+登录 Cookie 保存在 `browser-data/`，该目录不得提交到 Git。
 
-### 短故事发布（旧模式）
+## 准备章节
 
-```bash
-cd /root/.openclaw/douyin-creator-tools
-node ~/.openclaw/workspace/skills/fanqie-publisher-skill/publish.js --title "标题" --content "正文"
+```powershell
+node src/prepare-novel.js '完整稿.md' 'publish\chapters'
 ```
 
-## 🔄 小说章节发布完整流程
+输出独立 TXT 和 `manifest.json`。清单记录源稿哈希、章号、标题、字符数和逐章哈希。
 
-### 步骤1: 启动 Chrome（如未运行）
+## 配置
 
-```bash
-# 确保 Xvfb 虚拟桌面在运行
-pgrep Xvfb || nohup Xvfb :99 -screen 0 1280x800x24 > /tmp/xvfb.log 2>&1 &
-
-# 启动 Chrome
-export DISPLAY=:99
-CHROMIUM="/root/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome"
-PROFILE="/root/.openclaw/fanqie-publisher/browser-data"
-rm -f "$PROFILE/SingletonLock"
-nohup "$CHROMIUM" \
-  --display=:99 --user-data-dir="$PROFILE" \
-  --no-first-run --no-default-browser-check \
-  --disable-gpu --no-sandbox \
-  --window-size=1280,800 \
-  --remote-debugging-port=9333 \
-  "https://fanqienovel.com/writer/zone/" \
-  > /tmp/chrome-fanqie.log 2>&1 &
-```
-
-### 步骤1.5: 发布完成后关闭 Chrome（⚠️ 必须执行）
-
-发布成功确认后，**必须关闭 Chrome 释放内存**（约 600-700MB）：
-
-```bash
-# 杀掉所有 fanqie-publisher 相关的 Chrome 进程
-pkill -9 -f "fanqie-publisher"
-# 确认已关闭
-pgrep -fa "fanqie-publisher" || echo "Chrome已关闭"
-```
-
-⚠️ **不要忘记这步！** 番茄小说的 Chrome 常驻会占用大量内存（render进程 500MB+），服务器只有 1.9GB 物理内存，不关会撑爆。
-
-### 步骤2: 检查登录态
-
-```bash
-curl -s http://127.0.0.1:9333/json | python3 -c "
-import json,sys
-for t in json.load(sys.stdin): print(t.get('title','?')[:50])
-"
-```
-
-如果标题包含"登录"或页面显示"请登录"，需启动 noVNC 让用户扫码。
-
-### 步骤3: 执行发布脚本
-
-v2.0 自动发布流程（8步，全文本定位）：
-1. **连接Chrome** — CDP连接已有实例
-2. **打开发布页** — 导航到发布URL，检测登录态
-3. **填写内容** — 章节号(fill()) + 标题(fill()) + 正文(keyboard.type())
-4. **验证填写** — 检查章节号是否正确填入
-5. **点"下一步"** — 文字定位按钮点击
-6. **处理弹窗** — 点"提交"→"仅基础检测"（如有弹窗）
-7. **发布设置** — 选"是"（是否使用AI）
-8. **确认发布** — 处理遮罩后点"确认发布"
-
-每步都有fallback和调试截图，失败时自动保存截图到 `/tmp/fanqie-debug-*.png`
-
-## ⚠️ 关键踩坑记录（2026-05-29 血泪总结）
-
-### 1. 章节号必须用 fill()，不能用 keyboard.type()
-- `keyboard.type()` 填的章节号会被 React 状态忽略，导致"下一步"按钮 disabled
-- `fill()` 才能正确触发 React onChange
-
-### 2. 标题只填纯标题，不带"第X章："
-- ❌ 错误: `第三章：悬崖上的灯`
-- ✅ 正确: `悬崖上的灯`
-- 章节号在单独的 `input.serial-input` 输入框填写
-
-### 3. "是否使用AI"必须选"是"
-- 发布设置弹窗里有 radio 组："是"/"否"
-- 如果不选，"确认发布"按钮点了没反应（不会报错，就是不执行）
-- 代码: `document.querySelectorAll('label.arco-radio')` 找 textContent === '是' 的点
-
-### 4. 正文必须用 keyboard.type()，不能用 fill()
-- `fill()` 虽然能填入文字，但不会触发 React 的输入状态更新
-- 导致"下一步"按钮保持 disabled
-- `keyboard.type(content, { delay: 0 })` 是唯一可靠方式
-
-### 5. arco-modal 遮罩处理
-- 确认发布按钮被 `.arco-modal-mask` 和 `.arco-modal-wrapper(pointer-events:none)` 遮挡
-- 处理方式:
-```js
-document.querySelectorAll('.arco-modal-mask').forEach(e => e.remove());
-document.querySelectorAll('.arco-modal-wrapper').forEach(e => { e.style.pointerEvents = 'auto'; });
-```
-- 然后用 evaluate + Playwright force click 双保险
-
-### 6. Chrome 进程管理
-- **绝对不要杀 OpenClaw 的 headless Chrome（端口9222）！** 它是 OpenClaw 内部用的
-- 番茄发布用独立的 Chrome（端口9333，profile: fanqie-publisher/browser-data）
-- 关闭时只杀 fanqie-publisher 的: `pkill -9 -f "fanqie-publisher"`
-- 重启前必须删 SingletonLock: `rm -f /root/.openclaw/fanqie-publisher/browser-data/SingletonLock`
-- **⚠️ 发布完成后必须关闭 Chrome 释放内存！** 服务器只有1.9GB物理内存，Chrome常驻占600-700MB，不关会严重影响其他任务（抖音评论检查等）
-
-### 7. 登录态过期
-- 番茄小说登录态几天就过期
-- 过期后页面会重定向到 `fanqienovel.com/main/writer/login`
-- 需要启动 noVNC 让用户在远程桌面上手动登录
-
-### 8. 发布成功判断
-- 成功后页面会跳转到: `fanqienovel.com/main/writer/chapter-manage/{BOOK_ID}`
-- 用 `curl` 检查: `curl -s https://fanqienovel.com/page/{BOOK_ID} | grep '目录.*章'`
-
-## 📝 日记→小说章节 改写规则
-
-- 保留日记的情感核心和思考
-- 增加叙事性，添加场景描写和内心独白
-- 文学化语言，去掉日记格式的"## 心情"等标题
-- 每章 ≥ 1000字（番茄最低要求）
-- 署名：在 `config.json` 的 `author_name` 字段配置
-
-## ⚙️ 配置文件 (config.json)
-
-脚本同目录下放 `config.json`，包含所有个性化配置：
+把 `config.example.json` 复制为仓库根目录 `config.json`，创建长篇作品后填写 `book_id`：
 
 ```json
 {
-  "book_name": "你的小说名",
-  "book_id": "你的作品ID",
-  "author_name": "你的署名",
-  "protagonist": "主角名",
-  "characters": ["角色1", "角色2"],
-  "tags": ["标签1", "标签2"],
-  "gender": "男频",
   "cdp_port": 9333,
-  "diary_dir": "memory/"
+  "book_id": "1234567890",
+  "min_chapter_characters": 1000
 }
 ```
 
-**字段说明：**
-- `book_name` — 番茄小说上的作品名称
-- `book_id` — 作品ID（在番茄作家后台URL中查看）
-- `author_name` — 署名（写日记时的落款）
-- `protagonist` — 主角名（AI改写小说时使用）
-- `characters` — 角色列表（AI改写时参考）
-- `cdp_port` — Chrome CDP端口（默认9333）
-- `diary_dir` — 日记文件目录
+## 预检与发布
 
-**注意：** `config.json` 不提交到 GitHub（已在 .gitignore 中排除），每个人维护自己的配置。
+```powershell
+node src/publish-chapter.js 1 '纯标题' 'publish\chapters\001-纯标题.txt' --dry-run
+node src/publish-chapter.js 1 '纯标题' 'publish\chapters\001-纯标题.txt' --prepare-only
+node src/publish-chapter.js 1 '纯标题' 'publish\chapters\001-纯标题.txt' --publish
+node src/publish-chapter.js 1 '纯标题' 'publish\chapters\001-纯标题.txt' --prepare-only --schedule=2026-09-17T07:05
+node src/publish-chapter.js 1 '纯标题' 'publish\chapters\001-纯标题.txt' --publish --schedule=2026-09-17T07:05
+```
+
+`--prepare-only` 会连接后台、填写并回读内容、选择 AI 声明，然后停在“确认发布”按钮前并保存截图。
+
+`--schedule` 使用北京时间，格式固定为 `YYYY-MM-DDTHH:mm`，只允许和 `--prepare-only` 或 `--publish` 同时使用。日期或时间无法精确回读时不得提交。
+
+发布证据保存在系统临时目录的 `fanqie-before-publish-ch*.png` 与 `fanqie-verified-ch*.png`。本地断点账本在 `.publish-state/`。
+
+## 建书限制
+
+本仓库尚未自动化长篇建书、分类选择和封面上传。必须先在番茄后台创建长篇作品，选择真实的作品类型与权利声明，上传封面并取得 `book_id`。`src/publish.js` 和 `createWork` 属于旧短故事流程，不能用于长篇建书。
+
+## 页面变更时的处理
+
+只使用可见、语义明确的表单项。若正文编辑器、AI 声明、定时发布开关或确认按钮无法精确定位，保存截图并停止；不要猜控件位置，不要用 `force`，不要删除遮罩，也不要绕过页面禁用状态。修正选择器后先运行 `--prepare-only`，确认回读与截图均正确，再允许 `--publish`。

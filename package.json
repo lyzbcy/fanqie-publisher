@@ -1,13 +1,14 @@
 {
   "name": "fanqie-publisher",
-  "version": "1.0.0",
-  "description": "番茄小说自动发布工具 - 通过浏览器自动化实现短故事的创建与发布",
+  "version": "1.1.0",
+  "description": "番茄小说长篇章节拆分、预检与安全发布工具",
   "main": "src/index.js",
   "bin": {
     "fanqie": "./bin/fanqie.js"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --check src/publish-chapter.js && node --check src/prepare-novel.js",
+    "prepare:novel": "node src/prepare-novel.js",
     "publish:example": "node examples/basic.js"
   },
   "keywords": [
@@ -31,11 +32,9 @@
   },
   "homepage": "https://github.com/lyzbcy/fanqie-publisher#readme",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
-  "devDependencies": {},
-  "dependencies": {},
-  "peerDependencies": {
-    "agent-browser": ">=1.0.0"
+  "dependencies": {
+    "playwright": "^1.63.0"
   }
 }

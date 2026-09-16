@@ -1,455 +1,301 @@
 #!/usr/bin/env node
 
 /**
- * Fanqie Chapter Publisher - 番茄小说章节自动发布
- *
- * 设计原则：零硬编码CSS选择器，全部通过可见文本定位按钮/元素
- * 这样不管番茄小说怎么改版改CSS，只要按钮文字不变就能用
- *
- * 用法：
- *   node publish-chapter.js <章节号> <标题> <内容文件.md>
- *   CDP_PORT=9333 BOOK_ID=xxx node publish-chapter.js 7 '标题' /tmp/ch7.md
- *
- * @author lyzbcy
- * @license MIT
+ * 番茄小说章节发布器（安全版）
+ * 默认只做本地预检；只有显式传入 --publish 才会点击“确认发布”。
  */
 
-const { chromium } = require('/root/.openclaw/douyin-creator-tools/node_modules/playwright');
+const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { chromium } = require('playwright');
 
-// ─── 配置 ───────────────────────────────────────────
-const configPath = path.resolve(__dirname, 'config.json');
-const config = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, 'utf-8')) : {};
+const args = process.argv.slice(2);
+const chapter = Number.parseInt(args[0], 10);
+const chapterTitle = args[1];
+const contentFile = args[2];
+const publish = args.includes('--publish');
+const prepareOnly = args.includes('--prepare-only');
+const dryRun = args.includes('--dry-run') || (!publish && !prepareOnly);
+const scheduleArg = args.find((arg) => arg.startsWith('--schedule='));
+const scheduleAt = scheduleArg ? scheduleArg.slice('--schedule='.length) : null;
+
+const configCandidates = [path.resolve(process.cwd(), 'config.json'), path.resolve(__dirname, 'config.json')];
+const configPath = configCandidates.find((candidate) => fs.existsSync(candidate));
+const config = configPath ? JSON.parse(fs.readFileSync(configPath, 'utf8')) : {};
 const CDP = process.env.CDP_PORT || String(config.cdp_port || '9333');
 const BOOK_ID = process.env.BOOK_ID || config.book_id;
+const MIN_CHARACTERS = Number(process.env.MIN_CHAPTER_CHARACTERS || config.min_chapter_characters || 1000);
 
-// ─── 参数 ───────────────────────────────────────────
-const chapter = parseInt(process.argv[2]);
-const chapterTitle = process.argv[3];
-const contentFile = process.argv[4];
-
-if (!BOOK_ID) {
-  console.error('❌ 未配置 book_id，请在 config.json 中设置或通过 BOOK_ID 环境变量传入');
-  process.exit(1);
-}
-if (!chapter || !chapterTitle || !contentFile) {
-  console.error('❌ 用法: node publish-chapter.js <章节号> <标题> <内容文件>');
+function fail(message) {
+  console.error(`❌ ${message}`);
   process.exit(1);
 }
 
-// 清理内容：去掉markdown标题和分隔线
-const content = fs.readFileSync(contentFile, 'utf-8')
-  .replace(/^#.*$/gm, '')
-  .replace(/^---$/gm, '')
+if (!Number.isInteger(chapter) || chapter < 1 || !chapterTitle || !contentFile) {
+  fail('用法: node src/publish-chapter.js <章节号> <标题> <正文文件> [--dry-run|--prepare-only|--publish] [--schedule=YYYY-MM-DDTHH:mm]');
+}
+if (publish && prepareOnly) fail('--prepare-only 与 --publish 不能同时使用');
+if (scheduleAt && dryRun) fail('--schedule 只能与 --prepare-only 或 --publish 一起使用');
+if (!fs.existsSync(contentFile)) fail(`正文文件不存在: ${contentFile}`);
+
+let scheduleDate = null;
+let scheduleTime = null;
+if (scheduleAt) {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})$/.exec(scheduleAt);
+  if (!match) fail('--schedule 格式必须是 YYYY-MM-DDTHH:mm，例如 2026-09-17T07:05');
+  [, scheduleDate, scheduleTime] = match;
+  const candidate = new Date(`${scheduleAt}:00+08:00`);
+  if (Number.isNaN(candidate.getTime())) fail(`无效的定时发布时间：${scheduleAt}`);
+  const roundTrip = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(candidate).replace(' ', 'T');
+  if (roundTrip !== scheduleAt) fail(`无效的定时发布时间：${scheduleAt}`);
+}
+
+const content = fs.readFileSync(contentFile, 'utf8')
+  .replace(/^\uFEFF/, '')
+  .replace(/^#{1,6}.*$/gm, '')
+  .replace(/^\s*---\s*$/gm, '')
   .trim();
+const nonWhitespaceCharacters = [...content.replace(/\s/g, '')].length;
+const contentHash = crypto.createHash('sha256').update(content, 'utf8').digest('hex');
 
-const W = (ms) => new Promise(r => setTimeout(r, ms));
+console.log(`第${chapter}章：${chapterTitle}`);
+console.log(`非空白字符：${nonWhitespaceCharacters}`);
+console.log(`正文 SHA-256：${contentHash}`);
 
-// ─── 工具函数 ───────────────────────────────────────
-
-/**
- * 截图保存（调试用）
- */
-async function debugScreenshot(page, name) {
-  const p = `/tmp/fanqie-debug-${name}.png`;
-  await page.screenshot({ path: p }).catch(() => {});
-  console.log(`  📸 截图: ${p}`);
+if (nonWhitespaceCharacters < MIN_CHARACTERS) {
+  fail(`正文不足预检门槛 ${MIN_CHARACTERS} 字；请先以番茄编辑器实际计数器复核`);
 }
+if (dryRun) {
+  console.log('✅ 本地预检通过；未连接浏览器，未创建草稿，未发布。');
+  process.exit(0);
+}
+if (!BOOK_ID) fail('未配置 book_id；请在仓库根 config.json 设置或传入 BOOK_ID');
 
-/**
- * 通过按钮文字点击按钮（遍历所有按钮，找文本完全匹配的可见按钮）
- * 不依赖任何CSS class名，只看按钮上显示的文字
- */
-async function clickButtonByText(page, text, { timeout = 5000, force = false } = {}) {
-  const buttons = await page.locator('button').all();
-  for (const btn of buttons) {
-    const btnText = (await btn.textContent().catch(() => '')).trim();
-    const visible = await btn.isVisible().catch(() => false);
-    if (btnText === text && visible) {
-      await btn.click({ force: true, timeout });
-      return true;
-    }
+const stateDir = path.resolve(process.cwd(), '.publish-state');
+const ledgerPath = path.join(stateDir, `${BOOK_ID}.json`);
+fs.mkdirSync(stateDir, { recursive: true });
+const ledger = fs.existsSync(ledgerPath)
+  ? JSON.parse(fs.readFileSync(ledgerPath, 'utf8'))
+  : { bookId: String(BOOK_ID), chapters: {} };
+const ledgerKey = String(chapter);
+if (ledger.chapters[ledgerKey]?.sha256 === contentHash) fail(`账本显示第${chapter}章同一正文已发布，拒绝重复提交`);
+if (ledger.chapters[ledgerKey]) fail(`账本已有第${chapter}章但正文哈希不同，需人工处理修订，拒绝覆盖`);
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const compactText = (value) => value.replace(/\s/g, '');
+const paragraphs = content.split(/\r?\n\s*\r?\n+/).map((item) => item.trim()).filter(Boolean);
+const shot = async (page, name) => {
+  const target = path.join(os.tmpdir(), `fanqie-${name}.png`);
+  await page.screenshot({ path: target, fullPage: true }).catch(() => {});
+  console.log(`截图：${target}`);
+};
+const visibleButton = async (page, text) => {
+  const candidates = page.getByRole('button', { name: text, exact: true });
+  for (let index = 0; index < await candidates.count(); index += 1) {
+    const candidate = candidates.nth(index);
+    if (await candidate.isVisible().catch(() => false)) return candidate;
   }
-  // 如果没找到可见的，试试force click隐藏的
-  for (const btn of buttons) {
-    const btnText = (await btn.textContent().catch(() => '')).trim();
-    if (btnText === text) {
-      await btn.click({ force: true, timeout });
-      return true;
-    }
+  return null;
+};
+const visibleInputMatching = async (scope, pattern) => {
+  const inputs = scope.locator('input');
+  for (let index = 0; index < await inputs.count(); index += 1) {
+    const input = inputs.nth(index);
+    if (!(await input.isVisible().catch(() => false))) continue;
+    const descriptor = [
+      await input.getAttribute('placeholder').catch(() => ''),
+      await input.getAttribute('aria-label').catch(() => ''),
+      await input.getAttribute('type').catch(() => ''),
+    ].join(' ');
+    if (pattern.test(descriptor)) return input;
   }
-  return false;
-}
+  return null;
+};
 
-/**
- * 处理arco-modal遮罩问题
- * 番茄小说用Arco Design的弹窗系统，确认按钮经常被modal-mask遮住
- * 这里不是"硬编码坐标"，而是移除遮挡层让按钮可以点击
- */
-async function removeModalOverlays(page) {
-  await page.evaluate(() => {
-    // 隐藏遮罩层（半透明黑色背景）
-    document.querySelectorAll('.arco-modal-mask').forEach(el => {
-      el.style.display = 'none';
-    });
-    // 恢复弹窗容器的点击事件
-    document.querySelectorAll('.arco-modal-wrapper').forEach(el => {
-      el.style.pointerEvents = 'auto';
-      el.style.opacity = '1';
-    });
-  });
-}
+const configureSchedule = async (page) => {
+  if (!scheduleAt) return;
+  const scheduleLabel = page.getByText('定时发布', { exact: true }).first();
+  if (!(await scheduleLabel.isVisible().catch(() => false))) fail('未找到“定时发布”设置');
+  const scheduleForm = scheduleLabel.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " card-content-line ")][1]');
+  if (!(await scheduleForm.count())) fail('无法定位“定时发布”表单容器');
+  const settingsModal = scheduleLabel.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " arco-modal-content ")][1]');
+  if (!(await settingsModal.count())) fail('无法定位定时发布所属的发布设置弹窗');
+  const scheduleSwitch = scheduleForm.locator('[role="switch"], button.arco-switch, .arco-switch').first();
+  if (!(await scheduleSwitch.isVisible().catch(() => false))) fail('未找到可见的定时发布开关');
+  const isChecked = async () => {
+    const aria = await scheduleSwitch.getAttribute('aria-checked').catch(() => null);
+    const className = await scheduleSwitch.getAttribute('class').catch(() => '');
+    return aria === 'true' || /checked/i.test(className || '');
+  };
+  if (!(await isChecked())) await scheduleSwitch.click();
+  await wait(500);
+  if (!(await isChecked())) fail('无法验证定时发布开关已开启');
 
-/**
- * 强制点击指定文字的按钮（处理一切遮挡问题）
- * 用evaluate在JS层面直接触发click，绕过所有CSS遮挡
- */
-async function forceClickButton(page, text) {
-  const clicked = await page.evaluate((btnText) => {
-    const buttons = document.querySelectorAll('button');
-    for (const btn of buttons) {
-      if (btn.textContent.trim() === btnText) {
-        // 先移除遮挡
-        document.querySelectorAll('.arco-modal-mask').forEach(el => el.remove());
-        document.querySelectorAll('.arco-modal-wrapper').forEach(el => {
-          el.style.pointerEvents = 'auto';
-          el.style.opacity = '1';
-        });
-        // 多种方式确保点击生效
-        btn.click();
-        btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-        return true;
-      }
-    }
-    return false;
-  }, text);
-  return clicked;
-}
-
-/**
- * 等待页面稳定（URL变化或特定文字出现）
- */
-async function waitForPageStable(page, { timeout = 10000 } = {}) {
-  const url = page.url();
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    await W(1000);
-    if (page.url() !== url) return true;
+  const dateInput = (await visibleInputMatching(scheduleForm, /日期|date/i))
+    || (await visibleInputMatching(settingsModal, /日期|date/i));
+  const timeInput = (await visibleInputMatching(scheduleForm, /时间|time/i))
+    || (await visibleInputMatching(settingsModal, /时间|time/i));
+  const resolvedDateInput = dateInput;
+  const resolvedTimeInput = timeInput;
+  if (!resolvedDateInput || !resolvedTimeInput) fail('定时发布表单没有可见的日期和时间输入框');
+  await resolvedDateInput.fill(scheduleDate);
+  await resolvedTimeInput.fill(scheduleTime);
+  await page.keyboard.press('Escape').catch(() => {});
+  const actualDate = await resolvedDateInput.inputValue();
+  const actualTime = await resolvedTimeInput.inputValue();
+  if (actualDate !== scheduleDate || actualTime !== scheduleTime) {
+    fail(`定时发布时间回读失败：期望 ${scheduleDate} ${scheduleTime}，实际 ${actualDate} ${actualTime}`);
   }
-  return false;
-}
-
-// ─── 主流程 ─────────────────────────────────────────
+  console.log(`定时发布回读通过：${actualDate} ${actualTime}`);
+};
 
 (async () => {
-  console.log(`🍅 番茄小说章节发布器 v2.0`);
-  console.log(`   第${chapter}章: ${chapterTitle}`);
-  console.log(`   字数: ${content.length}`);
-  console.log(`   CDP端口: ${CDP}`);
-  console.log(`   作品ID: ${BOOK_ID}`);
-  console.log('');
-
-  // ── 连接浏览器 ──
-  console.log('[1/8] 连接Chrome...');
   let browser;
   try {
-    browser = await chromium.connectOverCDP(`http://localhost:${CDP}`, { timeout: 10000 });
-  } catch (e) {
-    console.error(`❌ 连接Chrome失败(CDP:${CDP}): ${e.message}`);
-    console.error('   请确保Chrome已启动（见SKILL.md步骤1）');
-    process.exit(1);
-  }
-  const ctx = browser.contexts()[0];
-  if (!ctx) {
-    console.error('❌ 没有找到浏览器上下文');
-    process.exit(1);
-  }
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${CDP}`, { timeout: 10000 });
+    const context = browser.contexts()[0];
+    if (!context) fail('CDP 浏览器没有可用上下文');
+    const draftPage = context.pages().find((item) => item.url().includes(`/main/writer/${BOOK_ID}/publish/`));
+    let page = draftPage ? await context.newPage() : context.pages().find((item) => item.url().includes('fanqienovel.com'));
+    if (!page) page = await context.newPage();
 
-  // 关闭旧的发布页面
-  for (const p of ctx.pages()) {
-    if (p.url().includes('/publish/')) await p.close().catch(() => {});
-  }
-
-  // 找到或创建页面
-  let page = ctx.pages().find(p => p.url().includes('fanqienovel.com'));
-  if (!page) page = await ctx.newPage();
-
-  // ── 打开发布页 ──
-  console.log('[2/8] 打开发布页...');
-  const publishUrl = `https://fanqienovel.com/main/writer/${BOOK_ID}/publish/?enter_from=newchapter_0`;
-  await page.goto(publishUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-  await W(5000);
-
-  // 检查登录态
-  if (page.url().includes('login')) {
-    console.error('❌ 登录已过期，需要通过noVNC重新扫码登录');
-    await debugScreenshot(page, 'login-expired');
-    process.exit(1);
-  }
-
-  // ── 填写章节号 ──
-  console.log('[3/8] 填写内容...');
-
-  // 章节号输入框：找placeholder包含"章节"或class包含"serial"的input
-  const serialInput = page.locator('input').filter({ hasText: '' }).first();
-  let serialFilled = false;
-
-  // 方式1：通过class名尝试（serial-input是番茄特有的）
-  try {
-    const si = page.locator('input.serial-input').first();
-    if (await si.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await si.click({ force: true });
-      await si.fill(String(chapter));
-      serialFilled = true;
-      console.log('  ✅ 章节号已填');
+    await page.goto('https://fanqienovel.com/main/writer/book-manage', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await wait(2000);
+    const manageLink = page.locator(`a[href*="/chapter-manage/${BOOK_ID}"]`).first();
+    if (!(await manageLink.count())) fail(`作品列表中找不到 book_id=${BOOK_ID} 的章节管理入口`);
+    const manageHref = await manageLink.getAttribute('href');
+    const manageUrl = new URL(manageHref, page.url()).href;
+    await page.goto(manageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await wait(3000);
+    if (page.url().includes('login') || (await page.getByText('扫码登录', { exact: false }).count())) {
+      fail('番茄登录已失效，请先在该 CDP 浏览器完成登录');
     }
-  } catch (e) {}
 
-  // 方式2：如果方式1失败，找所有input，看哪个在"下一步"按钮附近
-  if (!serialFilled) {
-    const inputs = await page.locator('input[type="text"], input:not([type])').all();
-    for (const inp of inputs) {
-      const ph = await inp.getAttribute('placeholder').catch(() => '');
-      const cls = await inp.getAttribute('class').catch(() => '');
-      // 章节号输入框通常没有placeholder或placeholder为空
-      if (!ph && cls.includes('serial')) {
-        await inp.click({ force: true });
-        await inp.fill(String(chapter));
-        serialFilled = true;
-        console.log('  ✅ 章节号已填(fallback)');
-        break;
-      }
+    const existingText = await page.locator('body').innerText();
+    const chapterPattern = new RegExp(`第\\s*${chapter}\\s*章`);
+    if (chapterPattern.test(existingText) || existingText.includes(chapterTitle)) {
+      await shot(page, `duplicate-ch${chapter}`);
+      fail(`章节管理页已出现第${chapter}章或同名标题“${chapterTitle}”，拒绝重复发布`);
     }
-  }
 
-  if (!serialFilled) {
-    console.error('❌ 找不到章节号输入框');
-    await debugScreenshot(page, 'no-serial-input');
-    process.exit(1);
-  }
-
-  await W(500);
-
-  // ── 填写标题 ──
-  // 标题输入框：找placeholder包含"标题"的input
-  const titleInput = page.locator('input[placeholder="请输入标题"]').first();
-  if (await titleInput.isVisible({ timeout: 3000 }).catch(() => false)) {
-    await titleInput.click({ force: true });
-    await titleInput.fill(chapterTitle);
-    console.log('  ✅ 标题已填');
-  } else {
-    // fallback：找placeholder含"标题"的input
-    const allInputs = await page.locator('input').all();
-    let found = false;
-    for (const inp of allInputs) {
-      const ph = await inp.getAttribute('placeholder').catch(() => '');
-      if (ph && ph.includes('标题')) {
-        await inp.click({ force: true });
-        await inp.fill(chapterTitle);
-        found = true;
-        console.log('  ✅ 标题已填(fallback)');
-        break;
-      }
+    const publishUrl = `https://fanqienovel.com/main/writer/${BOOK_ID}/publish/?enter_from=newchapter_0`;
+    if (draftPage) {
+      await page.close();
+      page = draftPage;
+      await page.bringToFront();
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+    } else {
+      await page.goto(publishUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     }
-    if (!found) {
-      console.error('❌ 找不到标题输入框');
-      await debugScreenshot(page, 'no-title-input');
-      process.exit(1);
+    await wait(3000);
+    const serial = page.locator('input.serial-input').first();
+    const title = page.locator('input[placeholder*="标题"]').first();
+    const editor = page.locator('.serial-editor-content .syl-editor .ProseMirror[contenteditable="true"]').first();
+    if (!(await serial.isVisible()) || !(await title.isVisible()) || !(await editor.isVisible())) {
+      await shot(page, `form-missing-ch${chapter}`);
+      fail('发布表单结构与预期不符，已停止；不会强制点击隐藏控件');
     }
-  }
-
-  await W(500);
-
-  // ── 填写正文 ──
-  // 正文编辑器：找可见的ProseMirror div（通用富文本编辑器框架）
-  let contentFilled = false;
-
-  // 方式1：ProseMirror
-  try {
-    const editor = page.locator('div.ProseMirror').first();
-    if (await editor.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await editor.click({ force: true });
-      await W(200);
-      await page.keyboard.type(content, { delay: 0 });
-      contentFilled = true;
-      console.log('  ✅ 正文已填(ProseMirror)');
+    await serial.fill(String(chapter));
+    await title.fill(chapterTitle);
+    await editor.click({ position: { x: 120, y: 120 } });
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Backspace');
+    for (let index = 0; index < paragraphs.length; index += 1) {
+      await page.keyboard.type(paragraphs[index], { delay: 0 });
+      if (index + 1 < paragraphs.length) await page.keyboard.press('Enter');
     }
-  } catch (e) {}
 
-  // 方式2：contenteditable div
-  if (!contentFilled) {
-    try {
-      const editor = page.locator('div[contenteditable="true"]').first();
-      if (await editor.isVisible({ timeout: 3000 }).catch(() => false)) {
-        await editor.click({ force: true });
-        await W(200);
-        await page.keyboard.type(content, { delay: 0 });
-        contentFilled = true;
-        console.log('  ✅ 正文已填(contenteditable)');
-      }
-    } catch (e) {}
-  }
-
-  if (!contentFilled) {
-    console.error('❌ 找不到正文编辑器');
-    await debugScreenshot(page, 'no-editor');
-    process.exit(1);
-  }
-
-  await W(3000);
-
-  // ── 验证填写 ──
-  console.log('[4/8] 验证填写...');
-  const serialVal = await page.evaluate(() => {
-    const inp = document.querySelector('input.serial-input');
-    return inp ? inp.value : '';
-  }).catch(() => '');
-  const titleVal = await page.evaluate(() => {
-    const inp = document.querySelector('input[placeholder="请输入标题"]');
-    return inp ? inp.value : '';
-  }).catch(() => '');
-
-  if (!serialVal) {
-    console.error('❌ 章节号未正确填入');
-    await debugScreenshot(page, 'serial-empty');
-    process.exit(1);
-  }
-  console.log(`  章节: ${serialVal}, 标题: ${titleVal || chapterTitle}`);
-
-  // ── 点"下一步" ──
-  console.log('[5/8] 点击下一步...');
-  await removeModalOverlays(page);
-  const nextClicked = await clickButtonByText(page, '下一步', { timeout: 5000 });
-  if (!nextClicked) {
-    console.error('❌ 找不到"下一步"按钮');
-    await debugScreenshot(page, 'no-next-btn');
-    process.exit(1);
-  }
-  await W(12000);
-
-  // ── 处理错别字弹窗 ──
-  console.log('[6/8] 处理弹窗...');
-  await removeModalOverlays(page);
-  await W(1000);
-
-  // 尝试点"提交"按钮（错别字检测弹窗）
-  const submitted = await clickButtonByText(page, '提交');
-  if (submitted) {
-    console.log('  📝 点了"提交"（错别字检测）');
-    await W(12000);
-
-    // 处理"仅基础检测"选项
-    await removeModalOverlays(page);
-    const basicCheck = await page.evaluate(() => {
-      // 找文字为"仅基础检测"的可点击元素
-      const all = document.querySelectorAll('span, div, a, label, li');
-      for (const el of all) {
-        if (el.textContent.trim() === '仅基础检测' && el.offsetParent !== null) {
-          el.click();
-          return true;
-        }
-      }
-      return false;
-    });
-    if (basicCheck) {
-      console.log('  ✅ 选了"仅基础检测"');
-      await W(12000);
+    const serialReadback = await serial.inputValue();
+    const titleReadback = await title.inputValue();
+    const contentReadback = await editor.innerText();
+    if (serialReadback !== String(chapter)) fail(`章节号回读失败：期望 ${chapter}，实际 ${serialReadback}`);
+    if (titleReadback !== chapterTitle) fail(`标题回读失败：期望“${chapterTitle}”，实际“${titleReadback}”`);
+    if (compactText(contentReadback) !== compactText(content)) {
+      await shot(page, `content-mismatch-ch${chapter}`);
+      fail(`正文回读不一致：期望 ${compactText(content).length} 字，实际 ${compactText(contentReadback).length} 字`);
     }
-  } else {
-    console.log('  ℹ️ 无错别字弹窗，继续');
-  }
-
-  // ── 勾选"是否使用AI" ──
-  console.log('[7/8] 发布设置...');
-  await removeModalOverlays(page);
-  await W(1000);
-
-  // 找radio组里的"是"（"是否使用AI"选项）
-  const aiSelected = await page.evaluate(() => {
-    // 方法1：找arco-radio组件
-    const radios = document.querySelectorAll('label.arco-radio');
-    for (const radio of radios) {
-      if (radio.textContent.trim() === '是') {
-        radio.click();
-        return true;
-      }
+    const renderedParagraphs = await editor.locator(':scope > *').allInnerTexts();
+    const internalBlankParagraph = renderedParagraphs.slice(0, -1).some((value) => !value.trim());
+    if (internalBlankParagraph) {
+      await shot(page, `blank-paragraph-ch${chapter}`);
+      fail('正文中检测到多余空段；请保持每个逻辑段落之间仅一次回车');
     }
-    // 方法2：找所有可点击元素中文字为"是"的
-    const all = document.querySelectorAll('span, label, div');
-    for (const el of all) {
-      if (el.textContent.trim() === '是' && el.offsetParent !== null) {
-        // 确保附近有"AI"相关文字
-        const parent = el.closest('.arco-form-item, .arco-modal, div[class]');
-        if (parent && parent.textContent.includes('AI')) {
-          el.click();
-          return true;
-        }
-      }
+    console.log(`发布前回读通过：第${serialReadback}章 / ${titleReadback} / ${compactText(contentReadback).length}字`);
+
+    const next = await visibleButton(page, '下一步');
+    if (!next || !(await next.isEnabled())) fail('“下一步”不可用，未继续');
+    await next.click();
+    await wait(3000);
+    const submit = await visibleButton(page, '提交');
+    if (submit && (await submit.isEnabled())) {
+      await submit.click();
+      await wait(3000);
     }
-    return false;
-  });
 
-  if (aiSelected) {
-    console.log('  ✅ "是否使用AI"已选"是"');
-  } else {
-    console.log('  ⚠️ 未找到"是否使用AI"选项（可能已默认或无需选择）');
+    const aiLabel = page.getByText('是否使用AI', { exact: false }).first();
+    if (!(await aiLabel.isVisible().catch(() => false))) fail('未找到“是否使用AI”表单，拒绝猜测默认值');
+    const aiForm = aiLabel.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " card-content-line ")][1]');
+    if (!(await aiForm.count())) fail('无法定位“是否使用AI”表单容器');
+    const aiYes = aiForm.locator('label.arco-radio').filter({ hasText: /^是$/ }).first();
+    if (!(await aiYes.isVisible().catch(() => false))) fail('“是否使用AI”表单中没有可见的“是”选项');
+    await aiYes.click();
+    const checkedRadio = aiForm.locator('input[type="radio"]:checked');
+    const checkedLabel = aiYes.locator('xpath=ancestor::label[1]');
+    const checkedByClass = (await checkedLabel.getAttribute('class').catch(() => ''))?.includes('checked');
+    const checkedByAria = (await aiYes.getAttribute('aria-checked').catch(() => null)) === 'true';
+    if (!(await checkedRadio.count()) && !checkedByClass && !checkedByAria) {
+      await shot(page, `ai-not-selected-ch${chapter}`);
+      fail('无法验证“是否使用AI=是”已选中');
+    }
+    console.log('AI 声明回读通过：是');
+
+    await configureSchedule(page);
+
+    const confirm = await visibleButton(page, '确认发布');
+    if (!confirm || !(await confirm.isEnabled())) {
+      await shot(page, `confirm-disabled-ch${chapter}`);
+      fail('“确认发布”不存在或不可用，未绕过页面校验');
+    }
+    await shot(page, `before-publish-ch${chapter}`);
+    if (prepareOnly) {
+      console.log(`✅ 第${chapter}章已填写并通过回读，停在“确认发布”前；未点击发布。`);
+      process.exit(0);
+    }
+    await confirm.click();
+    await wait(8000);
+
+    await page.goto(manageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await wait(3000);
+    const resultText = await page.locator('body').innerText();
+    if (!chapterPattern.test(resultText) && !resultText.includes(chapterTitle)) {
+      await shot(page, `unverified-ch${chapter}`);
+      fail('提交后无法在章节管理页验证章号/标题，未记为成功');
+    }
+    if (scheduleAt && (!resultText.includes(scheduleDate) || !resultText.includes(scheduleTime))) {
+      await shot(page, `schedule-unverified-ch${chapter}`);
+      fail(`章节已出现，但无法在章节管理页验证定时发布时间 ${scheduleDate} ${scheduleTime}，未记为成功`);
+    }
+
+    ledger.chapters[ledgerKey] = {
+      title: chapterTitle,
+      sha256: contentHash,
+      publishAt: scheduleAt ? `${scheduleAt}:00+08:00` : null,
+      verifiedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, 'utf8');
+    await shot(page, `verified-ch${chapter}`);
+    console.log(`✅ 第${chapter}章已在章节管理页验证，并写入本地账本。`);
+  } finally {
+    await browser?.close().catch(() => {});
   }
-
-  await W(2000);
-
-  // ── 确认发布 ──
-  console.log('[8/8] 确认发布...');
-  await removeModalOverlays(page);
-  await W(500);
-
-  // 先尝试常规点击
-  let confirmClicked = await clickButtonByText(page, '确认发布');
-  if (!confirmClicked) {
-    // 用force方式（绕过一切遮挡）
-    confirmClicked = await forceClickButton(page, '确认发布');
-  }
-
-  if (!confirmClicked) {
-    console.error('❌ 找不到"确认发布"按钮');
-    await debugScreenshot(page, 'no-confirm-btn');
-    process.exit(1);
-  }
-
-  await W(3000);
-
-  // Playwright层面再补点一次（双保险）
-  try {
-    const confirmBtn = page.locator('button').filter({ hasText: /^确认发布$/ }).first();
-    await confirmBtn.click({ force: true, timeout: 3000 });
-  } catch (e) {}
-
-  await W(10000);
-
-  // ── 验证结果 ──
-  await debugScreenshot(page, `ch${chapter}-result`);
-
-  const pageText = await page.evaluate(() => document.body?.innerText?.substring(0, 500) || '');
-  const currentUrl = page.url();
-
-  console.log('');
-  console.log('═══════════════════════════════════════');
-  console.log(`   URL: ${currentUrl}`);
-  console.log(`   页面文字(前100字): ${pageText.substring(0, 100)}`);
-
-  const success = pageText.includes('发布成功') || pageText.includes('审核') ||
-                  pageText.includes('已提交') || currentUrl.includes('chapter-manage');
-
-  if (success) {
-    console.log(`   🎉 第${chapter}章「${chapterTitle}」发布成功！`);
-  } else {
-    console.log(`   ⚠️ 发布状态不确定，请检查截图或远程桌面`);
-  }
-  console.log('═══════════════════════════════════════');
-
-  process.exit(success ? 0 : 1);
-
-})().catch(e => {
-  console.error('❌ 错误:', e.message);
-  process.exit(1);
-});
+})().catch((error) => fail(error.stack || error.message));

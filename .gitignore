@@ -33,3 +33,8 @@ temp/
 
 # User config (每个人不同，不提交)
 config.json
+src/config.json
+
+# Browser profile / publish state (contains login cookies or account-specific data)
+browser-data/
+.publish-state/
