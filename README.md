@@ -94,13 +94,24 @@ node src/publish-chapter.js 1 '纯标题' 'publish\chapters\001-纯标题.txt' -
 
 ## 推荐灰度顺序
 
-1. 42章全部通过 `--dry-run`。
+1. 本次待发布章节全部通过 `--dry-run`。
 2. 第1章执行 `--prepare-only`，人工核对确认页。
 3. 第1章发布并在章节管理页复核。
 4. 第2、3章重复同一流程。
 5. 三章均无重复、截断或错书后，再继续后续章节。
 
 详细说明见 [docs/SKILL.md](docs/SKILL.md)、[docs/workflow.md](docs/workflow.md) 和 [docs/troubleshooting.md](docs/troubleshooting.md)。
+
+## 日更 skill 与自更新
+
+完整标准见[日更流程](docs/references/daily-update.md)：实时查进度、按作者授权自主续写与校对、构稿、逐章等待审核和全文核验、留证与交接。每本书单独传`--book-dir`，不混用配置和账本。
+
+运行`npm run skill:install`安装可被发现的skill。每日首次使用静默运行自更新入口；断网或更新失败仍使用旧版。[更新机制与限制](docs/references/self-update.md)包含版本比较、快进更新、本地修改保护及失败恢复。
+
+```powershell
+node src/publish-remaining.js --book-dir='E:\path\to\novel' --from=8 --to=11 --publish --wait-for-review
+npm run skill:update
+```
 
 ## 测试
 

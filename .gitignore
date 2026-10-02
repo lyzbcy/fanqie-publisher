@@ -38,3 +38,5 @@ src/config.json
 # Browser profile / publish state (contains login cookies or account-specific data)
 browser-data/
 .publish-state/
+.skill-update.json
+.skill-update.lock

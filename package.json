@@ -1,14 +1,17 @@
 {
   "name": "fanqie-publisher",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "番茄小说长篇章节拆分、预检与安全发布工具",
   "main": "src/index.js",
   "bin": {
     "fanqie": "./bin/fanqie.js"
   },
   "scripts": {
-    "test": "node --check src/publish-chapter.js && node --check src/prepare-novel.js",
+    "test": "node --check src/publish-chapter.js && node --check src/prepare-novel.js && node --check src/publish-remaining.js && node --test tests/*.test.cjs",
+    "skill:install": "node scripts/install-skill.cjs",
+    "skill:update": "node scripts/self-update.cjs",
     "prepare:novel": "node src/prepare-novel.js",
+    "publish:remaining": "node src/publish-remaining.js",
     "publish:example": "node examples/basic.js"
   },
   "keywords": [

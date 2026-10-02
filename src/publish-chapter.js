@@ -67,6 +67,12 @@ const content = fs.readFileSync(contentFile, 'utf8')
   .trim();
 const nonWhitespaceCharacters = [...content.replace(/\s/g, '')].length;
 const contentHash = crypto.createHash('sha256').update(content, 'utf8').digest('hex');
+const manifestPath = path.join(path.dirname(path.resolve(contentFile)), 'manifest.json');
+const manifest = fs.existsSync(manifestPath)
+  ? JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  : null;
+const manifestChapter = manifest?.chapters?.find((item) => item.chapter === chapter);
+const manifestPrevious = manifest?.chapters?.find((item) => item.chapter === chapter - 1);
 
 console.log(`第${chapter}章：${chapterTitle}`);
 console.log(`非空白字符：${nonWhitespaceCharacters}`);
@@ -74,6 +80,12 @@ console.log(`正文 SHA-256：${contentHash}`);
 
 if (nonWhitespaceCharacters < MIN_CHARACTERS) {
   fail(`正文不足预检门槛 ${MIN_CHARACTERS} 字；请先以番茄编辑器实际计数器复核`);
+}
+if (manifest && (!manifestChapter
+  || manifestChapter.title !== chapterTitle
+  || manifestChapter.filename !== path.basename(contentFile)
+  || manifestChapter.sha256 !== contentHash)) {
+  fail(`第${chapter}章与 manifest.json 不一致，拒绝继续`);
 }
 if (dryRun) {
   console.log('✅ 本地预检通过；未连接浏览器，未创建草稿，未发布。');
@@ -90,6 +102,21 @@ const ledger = fs.existsSync(ledgerPath)
 const ledgerKey = String(chapter);
 if (ledger.chapters[ledgerKey]?.sha256 === contentHash) fail(`账本显示第${chapter}章同一正文已发布，拒绝重复提交`);
 if (ledger.chapters[ledgerKey]) fail(`账本已有第${chapter}章但正文哈希不同，需人工处理修订，拒绝覆盖`);
+if (!manifest || !manifestChapter || (chapter > 1 && !manifestPrevious)) {
+  fail('联网发布必须使用同目录 manifest.json，并能定位当前章与前一章');
+}
+for (let expected = 1; expected < chapter; expected += 1) {
+  const prior = ledger.chapters[String(expected)];
+  const expectedManifest = manifest.chapters.find((item) => item.chapter === expected);
+  if (!prior) fail(`本地账本缺少第${expected}章；拒绝跳到第${chapter}章`);
+  if (!expectedManifest || prior.title !== expectedManifest.title || prior.sha256 !== expectedManifest.sha256) {
+    fail(`本地账本第${expected}章与清单不一致；拒绝继续发布`);
+  }
+}
+const futureLedgerChapter = Object.keys(ledger.chapters)
+  .map((value) => Number.parseInt(value, 10))
+  .find((value) => Number.isInteger(value) && value > chapter);
+if (futureLedgerChapter) fail(`本地账本已存在更后的第${futureLedgerChapter}章；序列异常，拒绝继续`);
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const compactText = (value) => value.replace(/\s/g, '');
@@ -120,6 +147,68 @@ const visibleInputMatching = async (scope, pattern) => {
     if (pattern.test(descriptor)) return input;
   }
   return null;
+};
+const parseChapterHeading = (value) => {
+  const match = /^第\s*(\d+)\s*章\s*(.+)$/s.exec(value.replace(/\s+/g, ' ').trim());
+  if (!match) return null;
+  return { chapter: Number.parseInt(match[1], 10), title: match[2].trim() };
+};
+const readPublishedRows = async (page) => {
+  const result = [];
+  const rows = page.locator('tbody tr');
+  for (let index = 0; index < await rows.count(); index += 1) {
+    const cells = rows.nth(index).locator('td');
+    if (await cells.count() < 5) continue;
+    const parsed = parseChapterHeading(await cells.nth(0).innerText().catch(() => ''));
+    if (!parsed) continue;
+    result.push({
+      ...parsed,
+      status: (await cells.nth(3).innerText().catch(() => '')).replace(/\s+/g, ' ').trim(),
+      rowText: (await rows.nth(index).innerText().catch(() => '')).replace(/\s+/g, ' ').trim(),
+      previewHref: await cells.nth(0).locator('a').first().getAttribute('href').catch(() => null),
+    });
+  }
+  return result;
+};
+const verifyPublishedPreview = async (page, item) => {
+  if (!item.previewHref) fail(`第${item.chapter}章缺少后台预览入口，无法核对正文`);
+  const preview = await page.context().newPage();
+  try {
+    await preview.goto(new URL(item.previewHref, page.url()).href, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await wait(2000);
+    const previewText = compactText(await preview.locator('body').innerText());
+    if (!previewText.includes(compactText(content))) {
+      fail(`后台第${item.chapter}章预览正文与本地文件不一致，拒绝补账本或继续下一章`);
+    }
+  } finally {
+    await preview.close().catch(() => {});
+  }
+};
+const findTargetDraftUrl = async (page, manageUrl) => {
+  await page.goto(manageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await wait(2000);
+  const draftTab = page.getByText('草稿箱', { exact: true }).first();
+  if (!(await draftTab.isVisible().catch(() => false))) return null;
+  await draftTab.click();
+  await wait(1500);
+  const matches = [];
+  const rows = page.locator('tbody tr');
+  for (let index = 0; index < await rows.count(); index += 1) {
+    const row = rows.nth(index);
+    const cells = row.locator('td');
+    if (await cells.count() !== 4) continue;
+    const parsed = parseChapterHeading(await cells.nth(0).innerText().catch(() => ''));
+    if (!parsed || parsed.chapter !== chapter) continue;
+    const editLink = row.locator(`a[href*="/main/writer/${BOOK_ID}/publish/"]`).first();
+    matches.push({ ...parsed, href: await editLink.getAttribute('href').catch(() => null) });
+  }
+  if (matches.some((item) => item.title !== chapterTitle)) {
+    fail(`草稿箱存在第${chapter}章但标题不是“${chapterTitle}”；拒绝覆盖或跳章`);
+  }
+  if (matches.length > 1) fail(`草稿箱存在多个第${chapter}章草稿；拒绝猜测使用哪一个`);
+  if (!matches.length) return null;
+  if (!matches[0].href) fail(`第${chapter}章草稿缺少可验证的编辑入口`);
+  return new URL(matches[0].href, page.url()).href;
 };
 
 const configureSchedule = async (page) => {
@@ -165,8 +254,7 @@ const configureSchedule = async (page) => {
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${CDP}`, { timeout: 10000 });
     const context = browser.contexts()[0];
     if (!context) fail('CDP 浏览器没有可用上下文');
-    const draftPage = context.pages().find((item) => item.url().includes(`/main/writer/${BOOK_ID}/publish/`));
-    let page = draftPage ? await context.newPage() : context.pages().find((item) => item.url().includes('fanqienovel.com'));
+    let page = context.pages().find((item) => item.url().includes('fanqienovel.com'));
     if (!page) page = await context.newPage();
 
     await page.goto('https://fanqienovel.com/main/writer/book-manage', { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -181,22 +269,63 @@ const configureSchedule = async (page) => {
       fail('番茄登录已失效，请先在该 CDP 浏览器完成登录');
     }
 
-    const existingText = await page.locator('body').innerText();
+    const publishedRows = await readPublishedRows(page);
     const chapterPattern = new RegExp(`第\\s*${chapter}\\s*章`);
-    if (chapterPattern.test(existingText) || existingText.includes(chapterTitle)) {
+    const existingCurrent = publishedRows.find((item) => item.chapter === chapter);
+    if (existingCurrent) {
+      if (publishedRows[0]?.chapter !== chapter || existingCurrent.title !== chapterTitle) {
+        await shot(page, `existing-unverified-ch${chapter}`);
+        fail(`后台已有第${chapter}章，但标题或最新位置不正确`);
+      }
+      if (existingCurrent.status !== '已发布') {
+        fail(`后台第${chapter}章状态为“${existingCurrent.status}”，尚未真正发布；不能进入第${chapter + 1}章`);
+      }
+      if (chapter > 1 && publishedRows[1]?.chapter !== chapter - 1) {
+        await shot(page, `existing-sequence-broken-ch${chapter}`);
+        fail(`后台第${chapter}章之后没有紧接第${chapter - 1}章，拒绝补账本`);
+      }
+      await verifyPublishedPreview(page, existingCurrent);
+      ledger.chapters[ledgerKey] = {
+        title: chapterTitle,
+        sha256: contentHash,
+        publishAt: scheduleAt ? `${scheduleAt}:00+08:00` : null,
+        backendStatus: existingCurrent.status,
+        verifiedAt: new Date().toISOString(),
+        reconciledFromBackend: true,
+      };
+      fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, 'utf8');
+      await shot(page, `reconciled-ch${chapter}`);
+      console.log(`✅ 第${chapter}章已在后台发布且预览全文一致；已安全补写账本，不重复提交。`);
+      return;
+    }
+    if (publishedRows.some((item) => item.title === chapterTitle)) {
       await shot(page, `duplicate-ch${chapter}`);
-      fail(`章节管理页已出现第${chapter}章或同名标题“${chapterTitle}”，拒绝重复发布`);
+      fail(`章节管理页其他章号已使用标题“${chapterTitle}”，拒绝继续`);
+    }
+    if (chapter === 1 && publishedRows.length) {
+      fail(`后台已存在第${publishedRows[0].chapter}章；不能把第1章作为新章发布`);
+    }
+    if (chapter > 1) {
+      if (!publishedRows.length) fail(`后台没有已发布章节；拒绝从第${chapter}章开始`);
+      const latest = publishedRows[0];
+      if (latest.chapter !== chapter - 1) {
+        fail(`后台最新已发布为第${latest.chapter}章，目标却是第${chapter}章；拒绝串章`);
+      }
+      if (latest.title !== manifestPrevious.title || latest.status !== '已发布') {
+        fail(`后台前一章核验失败：期望“第${chapter - 1}章 ${manifestPrevious.title} / 已发布”，实际“第${latest.chapter}章 ${latest.title} / ${latest.status}”`);
+      }
+      for (let index = 1; index < publishedRows.length; index += 1) {
+        if (publishedRows[index].chapter !== publishedRows[index - 1].chapter - 1) {
+          fail(`后台当前页出现断号：第${publishedRows[index - 1].chapter}章之后是第${publishedRows[index].chapter}章`);
+        }
+      }
+      console.log(`连续性门禁通过：后台最新为第${latest.chapter}章《${latest.title}》，本次只允许发布第${chapter}章。`);
     }
 
     const publishUrl = `https://fanqienovel.com/main/writer/${BOOK_ID}/publish/?enter_from=newchapter_0`;
-    if (draftPage) {
-      await page.close();
-      page = draftPage;
-      await page.bringToFront();
-      await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
-    } else {
-      await page.goto(publishUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    }
+    const targetDraftUrl = await findTargetDraftUrl(page, manageUrl);
+    if (targetDraftUrl) console.log(`检测到第${chapter}章同名草稿，将从该草稿继续。`);
+    await page.goto(targetDraftUrl || publishUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await wait(3000);
     const serial = page.locator('input.serial-input').first();
     const title = page.locator('input[placeholder*="标题"]').first();
@@ -208,10 +337,18 @@ const configureSchedule = async (page) => {
     await serial.fill(String(chapter));
     await title.fill(chapterTitle);
     await editor.click({ position: { x: 120, y: 120 } });
+    await editor.focus();
     await page.keyboard.press('Control+A');
     await page.keyboard.press('Backspace');
+    // Fanqie's autosave/render pass can move focus back to <body> after the
+    // clear operation. Re-focus the ProseMirror surface before inserting CJK.
+    await editor.focus();
     for (let index = 0; index < paragraphs.length; index += 1) {
-      await page.keyboard.type(paragraphs[index], { delay: 0 });
+      // keyboard.type() only synthesizes physical key presses and may silently
+      // drop CJK text in newer versions of the Fanqie ProseMirror editor.
+      // insertText() emits a native text-input event, preserving Chinese text
+      // while the explicit Enter below keeps exactly one paragraph break.
+      await page.keyboard.insertText(paragraphs[index]);
       if (index + 1 < paragraphs.length) await page.keyboard.press('Enter');
     }
 
@@ -232,8 +369,20 @@ const configureSchedule = async (page) => {
     }
     console.log(`发布前回读通过：第${serialReadback}章 / ${titleReadback} / ${compactText(contentReadback).length}字`);
 
-    const next = await visibleButton(page, '下一步');
-    if (!next || !(await next.isEnabled())) fail('“下一步”不可用，未继续');
+    // Reusing a draft can trigger a delayed autosave after the final editor
+    // input. Fanqie temporarily disables the primary next button while that
+    // save is pending, so wait for the visible button to become actionable
+    // instead of treating the transient state as a permanent validation error.
+    let next = await visibleButton(page, '下一步');
+    const nextDeadline = Date.now() + 15000;
+    while (next && !(await next.isEnabled()) && Date.now() < nextDeadline) {
+      await wait(500);
+      next = await visibleButton(page, '下一步');
+    }
+    if (!next || !(await next.isEnabled())) {
+      await shot(page, `next-disabled-ch${chapter}`);
+      fail('“下一步”不可用，未继续');
+    }
     await next.click();
     await wait(3000);
     const submit = await visibleButton(page, '提交');
@@ -272,24 +421,61 @@ const configureSchedule = async (page) => {
       process.exit(0);
     }
     await confirm.click();
-    await wait(8000);
+    // Capture short-lived Arco feedback before navigating away. Fanqie may
+    // reject a submission (for example, a daily publishing limit) while
+    // keeping the chapter as a draft; those toasts can disappear in seconds.
+    await wait(600);
+    const feedbackLocator = page.locator([
+      '[role="alert"]',
+      '.arco-message',
+      '.arco-message-wrapper',
+      '.arco-notification',
+      '.arco-notification-wrapper',
+    ].join(','));
+    const feedback = [];
+    for (let index = 0; index < await feedbackLocator.count(); index += 1) {
+      const item = feedbackLocator.nth(index);
+      if (!(await item.isVisible().catch(() => false))) continue;
+      const value = (await item.innerText().catch(() => '')).trim();
+      if (value && !feedback.includes(value)) feedback.push(value);
+    }
+    if (feedback.length) console.log(`平台提交提示：${feedback.join(' / ')}`);
+    const rejection = feedback.find((value) => /限制|上限|失败|不能|无法|频繁|稍后|最多|已达/.test(value));
+    if (rejection) {
+      await shot(page, `rejected-ch${chapter}`);
+      fail(`平台拒绝第${chapter}章提交：${rejection}`);
+    }
+    await wait(7400);
 
     await page.goto(manageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await wait(3000);
     const resultText = await page.locator('body').innerText();
-    if (!chapterPattern.test(resultText) && !resultText.includes(chapterTitle)) {
+    const resultRows = await readPublishedRows(page);
+    const publishedChapter = resultRows.find((item) => item.chapter === chapter);
+    if (!publishedChapter || publishedChapter.title !== chapterTitle || resultRows[0]?.chapter !== chapter) {
       await shot(page, `unverified-ch${chapter}`);
-      fail('提交后无法在章节管理页验证章号/标题，未记为成功');
+      fail(`提交后无法验证第${chapter}章是后台最新章节且标题正确，未记为成功`);
+    }
+    if (!scheduleAt && publishedChapter.status !== '已发布') {
+      await shot(page, `not-published-ch${chapter}`);
+      fail(`第${chapter}章后台状态为“${publishedChapter.status}”，尚未真正发布；后续章节停止`);
+    }
+    if (chapter > 1 && resultRows[1]?.chapter !== chapter - 1) {
+      await shot(page, `sequence-broken-ch${chapter}`);
+      fail(`发布后序列不是第${chapter}章紧接第${chapter - 1}章；后续章节停止`);
     }
     if (scheduleAt && (!resultText.includes(scheduleDate) || !resultText.includes(scheduleTime))) {
       await shot(page, `schedule-unverified-ch${chapter}`);
       fail(`章节已出现，但无法在章节管理页验证定时发布时间 ${scheduleDate} ${scheduleTime}，未记为成功`);
     }
 
+    await verifyPublishedPreview(page, publishedChapter);
+
     ledger.chapters[ledgerKey] = {
       title: chapterTitle,
       sha256: contentHash,
       publishAt: scheduleAt ? `${scheduleAt}:00+08:00` : null,
+      backendStatus: publishedChapter.status,
       verifiedAt: new Date().toISOString(),
     };
     fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, 'utf8');
