@@ -1,6 +1,6 @@
 {
   "name": "fanqie-publisher",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "番茄小说长篇章节拆分、预检与安全发布工具",
   "main": "src/index.js",
   "bin": {

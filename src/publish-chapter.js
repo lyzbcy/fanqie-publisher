@@ -10,6 +10,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { chromium } = require('playwright');
+const { mergeVolumeRows, requireVolume, isSubmissionRejection, manageVolumeSelector, captureThenCommit } = require('./volume-sequence.cjs');
 
 const args = process.argv.slice(2);
 const chapter = Number.parseInt(args[0], 10);
@@ -27,6 +28,7 @@ const config = configPath ? JSON.parse(fs.readFileSync(configPath, 'utf8')) : {}
 const CDP = process.env.CDP_PORT || String(config.cdp_port || '9333');
 const BOOK_ID = process.env.BOOK_ID || config.book_id;
 const MIN_CHARACTERS = Number(process.env.MIN_CHAPTER_CHARACTERS || config.min_chapter_characters || 1000);
+const VOLUME_NAME = config.volume_name || null;
 
 function fail(message) {
   console.error(`❌ ${message}`);
@@ -123,7 +125,14 @@ const compactText = (value) => value.replace(/\s/g, '');
 const paragraphs = content.split(/\r?\n\s*\r?\n+/).map((item) => item.trim()).filter(Boolean);
 const shot = async (page, name) => {
   const target = path.join(os.tmpdir(), `fanqie-${name}.png`);
-  await page.screenshot({ path: target, fullPage: true }).catch(() => {});
+  await page.bringToFront();
+  try {
+    await page.screenshot({ path: target, fullPage: false, timeout: 10000 });
+  } catch (error) {
+    console.log(`截图首次超时，重试当前可见页面：${error.message.split('\n')[0]}`);
+    await page.waitForTimeout(1000);
+    await page.screenshot({ path: target, fullPage: false, timeout: 10000 });
+  }
   console.log(`截图：${target}`);
 };
 const visibleButton = async (page, text) => {
@@ -153,7 +162,18 @@ const parseChapterHeading = (value) => {
   if (!match) return null;
   return { chapter: Number.parseInt(match[1], 10), title: match[2].trim() };
 };
-const readPublishedRows = async (page) => {
+const selectManageVolume = async (page, name) => {
+  const selector = await manageVolumeSelector(page);
+  if ((await selector.locator('.byte-select-view-value').innerText()).trim() !== name) {
+    await selector.click();
+    const option = page.locator('.chapter-select-option').filter({ hasText: name });
+    if (await option.count() !== 1 || (await option.innerText()).trim() !== name) fail(`无法唯一选择分卷 ${name}`);
+    await option.click();
+    await wait(1200);
+  }
+  if ((await selector.locator('.byte-select-view-value').innerText()).trim() !== name) fail('分卷回读不一致');
+};
+const readCurrentPublishedRows = async (page, volumeName = null) => {
   const result = [];
   const rows = page.locator('tbody tr');
   for (let index = 0; index < await rows.count(); index += 1) {
@@ -163,12 +183,45 @@ const readPublishedRows = async (page) => {
     if (!parsed) continue;
     result.push({
       ...parsed,
+      volumeName,
       status: (await cells.nth(3).innerText().catch(() => '')).replace(/\s+/g, ' ').trim(),
       rowText: (await rows.nth(index).innerText().catch(() => '')).replace(/\s+/g, ' ').trim(),
       previewHref: await cells.nth(0).locator('a').first().getAttribute('href').catch(() => null),
     });
   }
   return result;
+};
+const readPublishedRows = async (page) => {
+  if (!VOLUME_NAME) return readCurrentPublishedRows(page);
+  await (await manageVolumeSelector(page)).click();
+  const names = (await page.locator('.chapter-select-option').allInnerTexts()).map(value => value.trim());
+  await page.keyboard.press('Escape');
+  if (!names.includes(VOLUME_NAME)) fail(`后台不存在目标分卷 ${VOLUME_NAME}`);
+  const result = [];
+  for (const name of names) {
+    await selectManageVolume(page, name);
+    result.push(...await readCurrentPublishedRows(page, name));
+  }
+  await selectManageVolume(page, VOLUME_NAME);
+  return mergeVolumeRows(result);
+};
+const configureVolume = async (page) => {
+  if (!VOLUME_NAME) return;
+  const header = page.locator('.publish-header-volume-name');
+  if (!(await header.isVisible())) fail('编辑器缺少可回读分卷');
+  if ((await header.innerText()).trim() !== VOLUME_NAME) {
+    await header.click();
+    const modal = page.locator('.editor-volume.byte-modal');
+    const item = modal.locator('.editor-volume-list-item-normal').filter({ hasText: VOLUME_NAME });
+    if (await item.count() !== 1) fail('目标分卷不存在或不唯一');
+    await item.locator('span').click();
+    if (!(await item.getAttribute('class')).includes('selected')) fail('目标分卷未选中');
+    const confirm = modal.locator('button').filter({ hasText: /^确定$/ });
+    if (!(await confirm.isEnabled())) fail('分卷确认不可用');
+    await confirm.click();
+  }
+  if ((await header.innerText()).trim() !== VOLUME_NAME) fail('编辑器分卷回读不一致');
+  console.log(`分卷回读通过：${VOLUME_NAME}`);
 };
 const verifyPublishedPreview = async (page, item) => {
   if (!item.previewHref) fail(`第${item.chapter}章缺少后台预览入口，无法核对正文`);
@@ -273,6 +326,7 @@ const configureSchedule = async (page) => {
     const chapterPattern = new RegExp(`第\\s*${chapter}\\s*章`);
     const existingCurrent = publishedRows.find((item) => item.chapter === chapter);
     if (existingCurrent) {
+      requireVolume(existingCurrent, VOLUME_NAME);
       if (publishedRows[0]?.chapter !== chapter || existingCurrent.title !== chapterTitle) {
         await shot(page, `existing-unverified-ch${chapter}`);
         fail(`后台已有第${chapter}章，但标题或最新位置不正确`);
@@ -290,11 +344,15 @@ const configureSchedule = async (page) => {
         sha256: contentHash,
         publishAt: scheduleAt ? `${scheduleAt}:00+08:00` : null,
         backendStatus: existingCurrent.status,
+        volumeName: existingCurrent.volumeName || null,
         verifiedAt: new Date().toISOString(),
         reconciledFromBackend: true,
       };
-      fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, 'utf8');
-      await shot(page, `reconciled-ch${chapter}`);
+      await captureThenCommit(() => shot(page, `reconciled-ch${chapter}`), () => {
+        const pending = `${ledgerPath}.pending-${process.pid}`;
+        fs.writeFileSync(pending, `${JSON.stringify(ledger, null, 2)}\n`, 'utf8');
+        fs.renameSync(pending, ledgerPath);
+      });
       console.log(`✅ 第${chapter}章已在后台发布且预览全文一致；已安全补写账本，不重复提交。`);
       return;
     }
@@ -327,6 +385,7 @@ const configureSchedule = async (page) => {
     if (targetDraftUrl) console.log(`检测到第${chapter}章同名草稿，将从该草稿继续。`);
     await page.goto(targetDraftUrl || publishUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await wait(3000);
+    await configureVolume(page);
     const serial = page.locator('input.serial-input').first();
     const title = page.locator('input[placeholder*="标题"]').first();
     const editor = page.locator('.serial-editor-content .syl-editor .ProseMirror[contenteditable="true"]').first();
@@ -440,7 +499,7 @@ const configureSchedule = async (page) => {
       if (value && !feedback.includes(value)) feedback.push(value);
     }
     if (feedback.length) console.log(`平台提交提示：${feedback.join(' / ')}`);
-    const rejection = feedback.find((value) => /限制|上限|失败|不能|无法|频繁|稍后|最多|已达/.test(value));
+    const rejection = feedback.find(isSubmissionRejection);
     if (rejection) {
       await shot(page, `rejected-ch${chapter}`);
       fail(`平台拒绝第${chapter}章提交：${rejection}`);
@@ -452,6 +511,7 @@ const configureSchedule = async (page) => {
     const resultText = await page.locator('body').innerText();
     const resultRows = await readPublishedRows(page);
     const publishedChapter = resultRows.find((item) => item.chapter === chapter);
+    requireVolume(publishedChapter, VOLUME_NAME);
     if (!publishedChapter || publishedChapter.title !== chapterTitle || resultRows[0]?.chapter !== chapter) {
       await shot(page, `unverified-ch${chapter}`);
       fail(`提交后无法验证第${chapter}章是后台最新章节且标题正确，未记为成功`);
@@ -476,10 +536,14 @@ const configureSchedule = async (page) => {
       sha256: contentHash,
       publishAt: scheduleAt ? `${scheduleAt}:00+08:00` : null,
       backendStatus: publishedChapter.status,
+      volumeName: publishedChapter.volumeName || null,
       verifiedAt: new Date().toISOString(),
     };
-    fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, 'utf8');
-    await shot(page, `verified-ch${chapter}`);
+    await captureThenCommit(() => shot(page, `verified-ch${chapter}`), () => {
+      const pending = `${ledgerPath}.pending-${process.pid}`;
+      fs.writeFileSync(pending, `${JSON.stringify(ledger, null, 2)}\n`, 'utf8');
+      fs.renameSync(pending, ledgerPath);
+    });
     console.log(`✅ 第${chapter}章已在章节管理页验证，并写入本地账本。`);
   } finally {
     await browser?.close().catch(() => {});
