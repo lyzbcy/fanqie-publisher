@@ -11,6 +11,7 @@ const os = require('os');
 const path = require('path');
 const { chromium } = require('playwright');
 const { mergeVolumeRows, requireVolume, isSubmissionRejection, manageVolumeSelector, captureThenCommit } = require('./volume-sequence.cjs');
+const { loadRegistry, enforceCoverage, resolveDailyDate } = require('./daily-coverage.cjs');
 
 const args = process.argv.slice(2);
 const chapter = Number.parseInt(args[0], 10);
@@ -29,6 +30,8 @@ const CDP = process.env.CDP_PORT || String(config.cdp_port || '9333');
 const BOOK_ID = process.env.BOOK_ID || config.book_id;
 const MIN_CHARACTERS = Number(process.env.MIN_CHAPTER_CHARACTERS || config.min_chapter_characters || 1000);
 const VOLUME_NAME = config.volume_name || null;
+const DAILY_REGISTRY = loadRegistry(process.cwd(), BOOK_ID);
+const DAILY_DATE = resolveDailyDate(process.env.FANQIE_DAILY_DATE);
 
 function fail(message) {
   console.error(`❌ ${message}`);
@@ -184,6 +187,8 @@ const readCurrentPublishedRows = async (page, volumeName = null) => {
     result.push({
       ...parsed,
       volumeName,
+      publishedAt: (await cells.nth(4).innerText().catch(() => '')).trim(),
+      characters: Number((await cells.nth(1).innerText().catch(() => '')).replace(/,/g, '')) || 0,
       status: (await cells.nth(3).innerText().catch(() => '')).replace(/\s+/g, ' ').trim(),
       rowText: (await rows.nth(index).innerText().catch(() => '')).replace(/\s+/g, ' ').trim(),
       previewHref: await cells.nth(0).locator('a').first().getAttribute('href').catch(() => null),
@@ -191,18 +196,18 @@ const readCurrentPublishedRows = async (page, volumeName = null) => {
   }
   return result;
 };
-const readPublishedRows = async (page) => {
-  if (!VOLUME_NAME) return readCurrentPublishedRows(page);
+const readPublishedRows = async (page, desiredVolume = VOLUME_NAME) => {
+  if (!desiredVolume) return readCurrentPublishedRows(page);
   await (await manageVolumeSelector(page)).click();
   const names = (await page.locator('.chapter-select-option').allInnerTexts()).map(value => value.trim());
   await page.keyboard.press('Escape');
-  if (!names.includes(VOLUME_NAME)) fail(`后台不存在目标分卷 ${VOLUME_NAME}`);
+  if (!names.includes(desiredVolume)) fail(`后台不存在目标分卷 ${desiredVolume}`);
   const result = [];
   for (const name of names) {
     await selectManageVolume(page, name);
     result.push(...await readCurrentPublishedRows(page, name));
   }
-  await selectManageVolume(page, VOLUME_NAME);
+  await selectManageVolume(page, desiredVolume);
   return mergeVolumeRows(result);
 };
 const configureVolume = async (page) => {
@@ -316,6 +321,11 @@ const configureSchedule = async (page) => {
     if (!(await manageLink.count())) fail(`作品列表中找不到 book_id=${BOOK_ID} 的章节管理入口`);
     const manageHref = await manageLink.getAttribute('href');
     const manageUrl = new URL(manageHref, page.url()).href;
+    const dailyManageUrls = {};
+    for (const book of DAILY_REGISTRY?.books?.filter(item => item.daily === true) || []) {
+      const link = page.locator(`a[href*="/chapter-manage/${book.bookId}"]`).first();
+      if (await link.count()) dailyManageUrls[String(book.bookId)] = new URL(await link.getAttribute('href'), page.url()).href;
+    }
     await page.goto(manageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await wait(3000);
     if (page.url().includes('login') || (await page.getByText('扫码登录', { exact: false }).count())) {
@@ -344,6 +354,7 @@ const configureSchedule = async (page) => {
         sha256: contentHash,
         publishAt: scheduleAt ? `${scheduleAt}:00+08:00` : null,
         backendStatus: existingCurrent.status,
+        backendPublishedAt: existingCurrent.publishedAt,
         volumeName: existingCurrent.volumeName || null,
         verifiedAt: new Date().toISOString(),
         reconciledFromBackend: true,
@@ -380,6 +391,14 @@ const configureSchedule = async (page) => {
       console.log(`连续性门禁通过：后台最新为第${latest.chapter}章《${latest.title}》，本次只允许发布第${chapter}章。`);
     }
 
+    await enforceCoverage({ registry: DAILY_REGISTRY, bookId: BOOK_ID, day: DAILY_DATE, targetRows: publishedRows, readRows: async book => {
+      const url = dailyManageUrls[String(book.bookId)];
+      if (!url) throw Error(`无法实查${book.title}的基本更新，停止加更`);
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await wait(3000);
+      if (page.url().includes('login')) throw Error('日更覆盖核验时登录失效，停止');
+      return readPublishedRows(page, book.volumeName || null);
+    } });
     const publishUrl = `https://fanqienovel.com/main/writer/${BOOK_ID}/publish/?enter_from=newchapter_0`;
     const targetDraftUrl = await findTargetDraftUrl(page, manageUrl);
     if (targetDraftUrl) console.log(`检测到第${chapter}章同名草稿，将从该草稿继续。`);
@@ -536,6 +555,7 @@ const configureSchedule = async (page) => {
       sha256: contentHash,
       publishAt: scheduleAt ? `${scheduleAt}:00+08:00` : null,
       backendStatus: publishedChapter.status,
+      backendPublishedAt: publishedChapter.publishedAt,
       volumeName: publishedChapter.volumeName || null,
       verifiedAt: new Date().toISOString(),
     };
