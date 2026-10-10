@@ -26,6 +26,15 @@ function covered(book, value) {
   const target = minimum(book);
   return value.chapters >= target.chapters && value.characters >= target.characters;
 }
+function scopedBooks(registry, day) {
+  const active = registry.books.filter(book => book.daily === true);
+  const scope = registry.dailyPolicy?.authorizedDayScopes?.[day];
+  if (!scope) return active;
+  if (scope.authorizedBy !== 'user' || !Array.isArray(scope.bookIds) || !scope.bookIds.length
+    || new Set(scope.bookIds.map(String)).size !== scope.bookIds.length
+    || scope.bookIds.some(id => !active.some(book => String(book.bookId) === String(id)))) throw Error('临时日更书目缺少作者授权或书号无效');
+  return active.filter(book => scope.bookIds.map(String).includes(String(book.bookId)));
+}
 function loadRegistry(cwd, bookId) {
   let dir = path.resolve(cwd);
   while (true) {
@@ -46,9 +55,9 @@ function loadRegistry(cwd, bookId) {
 }
 async function enforceCoverage({ registry, bookId, day, targetRows, readRows }) {
   if (!registry) return;
-  const active = registry.books.filter(book => book.daily === true);
+  const active = scopedBooks(registry, day);
   const target = active.find(book => String(book.bookId) === String(bookId));
-  if (!target) return;
+  if (!target) throw Error('当前作品不在作者确认的今日临时更新书目内');
   const targetProgress = progress(targetRows, day);
   if (targetProgress.chapters === 0) return;
   const checkedProgress = (book, rows) => {
@@ -128,4 +137,4 @@ function planCoverage({ books, snapshots, day, quota, extras = false }) {
   }
   return { day, queue, coveredBooks: work.map(item => ({ bookId: String(item.book.bookId), ...item.value })) };
 }
-module.exports = { resolveDailyDate, dayOf, progress, minimum, covered, loadRegistry, enforceCoverage, planCoverage };
+module.exports = { resolveDailyDate, dayOf, progress, minimum, covered, scopedBooks, loadRegistry, enforceCoverage, planCoverage };

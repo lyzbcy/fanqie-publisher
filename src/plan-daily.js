@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { planCoverage, resolveDailyDate } = require('./daily-coverage.cjs');
+const { planCoverage, resolveDailyDate, scopedBooks } = require('./daily-coverage.cjs');
 const args = process.argv.slice(2);
 const option = name => args.find(value => value.startsWith(`--${name}=`))?.slice(name.length + 3);
 try {
@@ -14,7 +14,8 @@ try {
   if (snapshot.day !== day || snapshot.source !== 'fanqie-backend') throw Error('快照日期或来源不符');
   const age = Date.now() - Date.parse(snapshot.verifiedAt);
   if (!Number.isFinite(age) || age < 0 || age > 10 * 60 * 1000) throw Error('后台快照超过10分钟或时间无效，重新实查后再规划');
-  const books = registry.books.map(book => {
+  const selected = scopedBooks(registry, day);
+  const books = selected.map(book => {
     if (!book.daily) return book;
     const config = JSON.parse(fs.readFileSync(path.join(book.directory, 'config.json'), 'utf8'));
     if (String(config.book_id) !== String(book.bookId)) throw Error('书号与作品配置不符');
@@ -39,6 +40,7 @@ try {
     }) };
   });
   const plan = planCoverage({ books, snapshots: snapshot.books, day, quota: snapshot.quota || {}, extras: args.includes('--extras') });
+  plan.deferredBooks = registry.books.filter(book => book.daily === true && !selected.some(item => String(item.bookId) === String(book.bookId))).map(book => ({ bookId: String(book.bookId), title: book.title }));
   console.log(JSON.stringify(plan, null, 2));
   console.log('仅生成轮转计划；未连接浏览器或提交章节。执行时每章仍须通过发布器的实时门禁。');
 } catch (error) { console.error(error.message); process.exitCode = 1; }

@@ -1,11 +1,24 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { progress, enforceCoverage, planCoverage, resolveDailyDate } = require('../src/daily-coverage.cjs');
+const { progress, enforceCoverage, planCoverage, resolveDailyDate, scopedBooks } = require('../src/daily-coverage.cjs');
 const day = '2026-10-10';
 const row = (characters = 1200, status = '已发布', date = day) => ({ status, characters, publishedAt: `${date} 07:05` });
 const books = ['a', 'b'].map(bookId => ({ bookId, title: bookId, daily: true, dailyTargetChapters: 2, preparedChapters: [{ chapter: 1, characters: 1200 }, { chapter: 2, characters: 1200 }] }));
 const snapshots = { a: { rows: [], occupiesTodaySlot: false, completeToday: true }, b: { rows: [], occupiesTodaySlot: false, completeToday: true } };
 const quota = { remainingWorkSlots: 2, remainingCharactersByBook: { a: 5000, b: 5000 } };
+test('explicit author-approved day scope preserves other active books and allows chosen-book updates', async () => {
+  const registry = { books, dailyPolicy: { authorizedDayScopes: { [day]: { bookIds: ['a'], authorizedBy: 'user' } } } };
+  assert.deepEqual(scopedBooks(registry, day).map(book => book.bookId), ['a']);
+  assert.equal(registry.books[1].daily, true);
+  assert.equal(scopedBooks(registry, '2026-10-11').length, 2);
+  await enforceCoverage({ registry, bookId: 'a', day, targetRows: [row()], readRows: async () => { throw Error('unchosen work should not be read'); } });
+  await assert.rejects(enforceCoverage({ registry, bookId: 'b', day, targetRows: [], readRows: async () => [] }), /不在作者确认/);
+});
+test('unapproved or unknown scoped book cannot weaken coverage', () => {
+  for (const scope of [{ bookIds: ['a'] }, { bookIds: ['unknown'], authorizedBy: 'user' }, { bookIds: ['a', 'a'], authorizedBy: 'user' }]) {
+    assert.throws(() => scopedBooks({ books, dailyPolicy: { authorizedDayScopes: { [day]: scope } } }, day), /授权或书号/);
+  }
+});
 test('requested future or past date cannot bypass today coverage', () => {
   const now = new Date('2026-10-09T16:01:00Z');
   assert.equal(resolveDailyDate('2026-10-10', now), '2026-10-10');
