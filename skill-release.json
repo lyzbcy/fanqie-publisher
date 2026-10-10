@@ -1,0 +1,20 @@
+{
+  "repo": "fanqie-publisher",
+  "directory": "fanqie-publisher-skill",
+  "version": "1.3.2",
+  "asset": "fanqie-publisher-skill.zip",
+  "include": [
+    "SKILL.md",
+    "README.md",
+    "LICENSE",
+    "package.json",
+    "package-lock.json",
+    "config.example.json",
+    "src",
+    "bin",
+    "scripts",
+    "docs",
+    "references"
+  ],
+  "repository": "lyzbcy/fanqie-publisher"
+}

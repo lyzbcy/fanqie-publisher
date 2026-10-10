@@ -8,11 +8,13 @@ metadata:
 
 # 番茄小说长篇章节发布
 
-## 每日首次使用：静默检查更新
+## Release 安装版
 
-在写作、浏览器启动和发布前运行 `node <本skill目录>/scripts/self-update.cjs`。仓库直接使用则运行 `node <仓库>/scripts/self-update.cjs`。同一天只检查一次；失败继续旧版，不索要确认、不终止日更。成功更新后重读本文件和本次需要的引用。原理、保护边界及日志见 [references/self-update.md](references/self-update.md)。这不是每天自动唤醒或自动发布的定时任务。
+本 SKILL.md 所在目录也是配套工具根目录；通过软件中心安装后位于用户主目录的 .agents/skills/fanqie-publisher-skill，不依赖作者电脑路径，也无需另克隆仓库。
 
-已安装副本的 `.runtime.json` 记录真实仓库位置，不能把别人的 E 盘路径当成所有用户的固定路径。安装方式：在仓库运行 `npm run skill:install`。
+首次使用先检查 Node.js 20+，在本目录运行 npm ci 安装锁定依赖；按实际系统启动可用的 Chromium/Edge，用户本人完成首次登录。作品正文、book_id和发布授权由用户提供，不能沿用示例作品身份。
+
+Release副本的新版本由软件中心查询并安装。Git源码副本沿用 scripts/self-update.cjs 的每日静默检查；非Git目录保持当前版本，不尝试Git合并。默认预检；只有用户明确授权发布的作品才执行发布。
 
 ## “今天更新”默认工作流
 

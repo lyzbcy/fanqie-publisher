@@ -127,3 +127,9 @@ npm ls --depth=0
 ## License
 
 MIT
+
+## Skill Release包
+
+[最新可安装ZIP](https://github.com/lyzbcy/fanqie-publisher/releases/latest/download/fanqie-publisher-skill.zip)可由捞鱼软件中心一键安装到用户目录 .agents/skills/fanqie-publisher-skill。完整包包含SKILL.md、引用资料和必要的配套代码，安装不自动运行任务。
+
+示例：请用fanqie-publisher-skill先检查我的小说稿和后台章号，整理下一章并做发布预检，先不要发布。

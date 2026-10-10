@@ -40,3 +40,5 @@ browser-data/
 .publish-state/
 .skill-update.json
 .skill-update.lock
+
+release/
