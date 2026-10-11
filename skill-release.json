@@ -1,7 +1,7 @@
 {
   "repo": "fanqie-publisher",
   "directory": "fanqie-publisher-skill",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "asset": "fanqie-publisher-skill.zip",
   "include": [
     "SKILL.md",
