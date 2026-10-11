@@ -2,7 +2,7 @@
 name: fanqie-publisher-skill
 description: 为番茄长篇小说执行日更：核对实时进度，在作者已授权自主创作时续写校对，再拆章、顺序发布、等待审核并留存凭据。用户说“更新今天的”“帮我发布”或要求维护番茄发布流程时使用。
 metadata:
-  version: "1.3.4"
+  version: "1.3.5"
   source: https://github.com/lyzbcy/fanqie-publisher
 ---
 
