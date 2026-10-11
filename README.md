@@ -110,7 +110,7 @@ node src/publish-chapter.js 1 '纯标题' 'publish\chapters\001-纯标题.txt' -
 
 完整标准见[日更流程](docs/references/daily-update.md)：实时查进度、按作者授权自主续写与校对、构稿、逐章等待审核和全文核验、留证与交接。每本书单独传`--book-dir`，不混用配置和账本。
 
-运行`npm run skill:install`安装可被发现的skill。每日首次使用静默运行自更新入口；断网或更新失败仍使用旧版。[更新机制与限制](docs/references/self-update.md)包含版本比较、快进更新、本地修改保护及失败恢复。
+Release安装到 .agents/skills/fanqie-publisher-skill；每日首次使用运行 .laoyu/update.cjs。断网或更新失败继续旧版。[更新机制与限制](docs/references/self-update.md)包含版本比较、快进更新、本地修改保护及失败恢复。
 
 ```powershell
 node src/publish-remaining.js --book-dir='E:\path\to\novel' --from=8 --to=11 --publish --wait-for-review
@@ -133,3 +133,7 @@ MIT
 [最新可安装ZIP](https://github.com/lyzbcy/fanqie-publisher/releases/latest/download/fanqie-publisher-skill.zip)可由捞鱼软件中心一键安装到用户目录 .agents/skills/fanqie-publisher-skill。完整包包含SKILL.md、引用资料和必要的配套代码，安装不自动运行任务。
 
 示例：请用fanqie-publisher-skill先检查我的小说稿和后台章号，整理下一章并做发布预检，先不要发布。
+
+## Release安装副本
+
+每天首次使用执行 `node "<Skill目录>/.laoyu/update.cjs"`。仅检查最新正式Release，验证ZIP哈希和逐文件清单。关闭/开启用--disable/--enable，重试--force，保留最新用户数据回滚--rollback。本地配套代码修改时保留原版；网络或校验失败继续旧版。Git源码副本的旧Git机制仅用于源码维护，不用于Release安装。

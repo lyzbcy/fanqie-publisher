@@ -2,17 +2,19 @@
 name: fanqie-publisher-skill
 description: 为番茄长篇小说执行日更：核对实时进度，在作者已授权自主创作时续写校对，再拆章、顺序发布、等待审核并留存凭据。用户说“更新今天的”“帮我发布”或要求维护番茄发布流程时使用。
 metadata:
-  version: "1.3.2"
+  version: "1.3.3"
   source: https://github.com/lyzbcy/fanqie-publisher
 ---
 
 # 番茄小说长篇章节发布
 
-## 每日首次使用：静默检查更新
+## Release 安装版
 
-在写作、浏览器启动和发布前运行 `node <本skill目录>/scripts/self-update.cjs`。仓库直接使用则运行 `node <仓库>/scripts/self-update.cjs`。同一天只检查一次；失败继续旧版，不索要确认、不终止日更。成功更新后重读本文件和本次需要的引用。原理、保护边界及日志见 [references/self-update.md](references/self-update.md)。这不是每天自动唤醒或自动发布的定时任务。
+本 SKILL.md 所在目录也是配套工具根目录；通过软件中心安装后位于用户主目录的 .agents/skills/fanqie-publisher-skill，不依赖作者电脑路径，也无需另克隆仓库。
 
-已安装副本的 `.runtime.json` 记录真实仓库位置，不能把别人的 E 盘路径当成所有用户的固定路径。安装方式：在仓库运行 `npm run skill:install`。
+首次使用先检查 Node.js 20+，在本目录运行 npm ci 安装锁定依赖；按实际系统启动可用的 Chromium/Edge，用户本人完成首次登录。作品正文、book_id和发布授权由用户提供，不能沿用示例作品身份。
+
+Release副本使用随包正式Release更新器；Git源码副本沿用原Git更新器。默认预检；只有用户明确授权发布的作品才执行发布。
 
 ## “今天更新”默认工作流
 
@@ -111,3 +113,9 @@ node src/publish-chapter.js 1 '纯标题' 'publish\chapters\001-纯标题.txt' -
 ## 页面变更时的处理
 
 只使用可见、语义明确的表单项。若正文编辑器、AI 声明、定时发布开关或确认按钮无法精确定位，保存截图并停止；不要猜控件位置，不要用 `force`，不要删除遮罩，也不要绕过页面禁用状态。修正选择器后先运行 `--prepare-only`，确认回读与截图均正确，再允许 `--publish`。
+
+## 每日首次使用与静默更新
+
+每天首次加载本 Skill 时，先运行 `node "<Skill目录>/.laoyu/update.cjs"`，再继续本次任务。只读取最新正式 Release，校验 GitHub SHA-256 和逐文件清单；失败继续旧版，不阻断任务。若输出 UPDATED，重新读取 SKILL.md。本人登录、稿件、运行数据保留；配套代码被本地修改时停止升级。更新默认开启，可在软件中心详情单独关闭，或运行相同命令加 --disable / --enable。手动重试加 --force，回滚加 --rollback；回滚只接受本次管理的备份，仍保留最新用户数据。
+
+
